@@ -4,6 +4,8 @@
 // this same interface.)
 #pragma once
 
+#include <utility>
+#include <cstdint>
 #include <atomic>
 #include <chrono>
 #include <filesystem>

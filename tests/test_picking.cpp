@@ -1,6 +1,7 @@
 // Entity picking math: a ray cast from the camera through the crate's projected
 // screen position must pass close to the crate — this is the geometric core of
 // the editor's click-to-select.
+#include <cmath>
 #include "test_framework.h"
 
 #include <filesystem>

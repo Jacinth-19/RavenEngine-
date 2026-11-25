@@ -4,6 +4,7 @@
 // `entity` is an opaque integer handle: the raw ECS entity value.
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <unordered_map>

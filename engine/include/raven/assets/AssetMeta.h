@@ -3,6 +3,7 @@
 //                  "importVersion": 1, "importSettings": { ... } }
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>

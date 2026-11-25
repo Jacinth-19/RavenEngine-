@@ -1,6 +1,7 @@
 // RavenEngine — thin helpers over std::filesystem with consistent error reporting.
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>

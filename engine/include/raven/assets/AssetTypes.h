@@ -1,6 +1,7 @@
 // RavenEngine — asset type taxonomy + extension mapping.
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 namespace raven {

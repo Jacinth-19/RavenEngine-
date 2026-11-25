@@ -3,6 +3,7 @@
 // itself lives in the core so it is unit-testable without the editor.
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>

@@ -3,6 +3,7 @@
 // DeserializeAsset turns a payload back into the asset on load.
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>

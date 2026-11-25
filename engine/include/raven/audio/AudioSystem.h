@@ -2,6 +2,7 @@
 // exists (CI runners, headless servers): Initialize reports failure but every call stays valid.
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <string>

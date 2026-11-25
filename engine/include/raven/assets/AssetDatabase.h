@@ -3,6 +3,7 @@
 // orphaned (missing source) entries.
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>

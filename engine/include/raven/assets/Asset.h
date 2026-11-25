@@ -2,6 +2,7 @@
 // CPU-side data only; GPU handles live in the renderer (see renderer/GpuResources.h).
 #pragma once
 
+#include <cstdint>
 #include <glm/glm.hpp>
 #include <memory>
 #include <string>

@@ -2,6 +2,7 @@
 // hot reload, GPU upload hand-off and reference-count GC.
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <future>
 #include <memory>

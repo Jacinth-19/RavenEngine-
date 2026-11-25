@@ -12,6 +12,7 @@
 // Payloads are type-specific byte blobs produced by the importers (see Importers.h).
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>

@@ -37,10 +37,13 @@ add_library(raven_miniaudio STATIC ${CMAKE_SOURCE_DIR}/engine/src/third_party/mi
 target_include_directories(raven_miniaudio PUBLIC ${CMAKE_SOURCE_DIR}/third_party/miniaudio)
 if(WIN32)
     target_link_libraries(raven_miniaudio PUBLIC ole32 winmm avrt)
-    target_compile_definitions(raven_miniaudio PRIVATE MA_NO_RUNTIME_LINKING)
+    #Compile-time linking needs headers for every enabled backend; we only have WASAPI/DSound/WinMM,
+    #so disable the JACK backend entirely (we don't use it).
+    target_compile_definitions(raven_miniaudio PRIVATE MA_NO_RUNTIME_LINKING MA_NO_JACK)
 elseif(APPLE)
     target_link_libraries(raven_miniaudio PUBLIC "-framework AudioToolbox" "-framework CoreAudio" "-framework CoreFoundation")
-    target_compile_definitions(raven_miniaudio PRIVATE MA_NO_RUNTIME_LINKING)
+    # Apple is MA_UNIX: without these, miniaudio enables ALSA/PulseAudio/JACK compile-time includes.
+    target_compile_definitions(raven_miniaudio PRIVATE MA_NO_RUNTIME_LINKING MA_NO_JACK MA_NO_ALSA MA_NO_PULSEAUDIO)
 else()
     target_link_libraries(raven_miniaudio PUBLIC dl m pthread)
 endif()

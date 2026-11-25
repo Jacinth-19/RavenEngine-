@@ -3,6 +3,7 @@
 // optional callback (used by the editor console panel).
 #pragma once
 
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <functional>
