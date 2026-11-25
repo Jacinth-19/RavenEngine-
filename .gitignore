@@ -1,0 +1,44 @@
+# Build output
+build/
+build-*/
+out/
+_build/
+Library/
+*.o
+*.obj
+!sample/**/*.obj
+*.so
+*.dylib
+*.dll
+*.exe
+*.a
+*.lib
+*.pdb
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+_deps/
+install_manifest.txt
+compile_commands.json
+
+# Editor/IDE
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.VC.db
+
+# OS
+.DS_Store
+Thumbs.db
+
+# RavenEngine local state
+sample/Library/
+*.ravencache
+imgui.ini
+
+# Generated shader binaries are committed on purpose (*.spv) – see assets/engine/shaders/

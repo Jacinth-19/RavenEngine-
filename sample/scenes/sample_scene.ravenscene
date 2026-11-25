@@ -1,0 +1,213 @@
+{
+  "schemaVersion": 1,
+  "name": "Sample Scene",
+  "entities": [
+    {
+      "id": 0,
+      "components": {
+        "name": {
+          "name": "Sun"
+        },
+        "transform": {
+          "position": [
+            0,
+            6,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "parent": -1
+        },
+        "directionalLight": {
+          "direction": [
+            0.42,
+            -0.83,
+            0.36
+          ],
+          "color": [
+            1.0,
+            0.96,
+            0.88
+          ],
+          "intensity": 3.0,
+          "castShadow": true
+        }
+      }
+    },
+    {
+      "id": 1,
+      "components": {
+        "name": {
+          "name": "Warm Point Light"
+        },
+        "transform": {
+          "position": [
+            -2.2,
+            1.4,
+            1.6
+          ],
+          "rotation": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "parent": -1
+        },
+        "pointLight": {
+          "color": [
+            1.0,
+            0.62,
+            0.25
+          ],
+          "intensity": 12.0,
+          "radius": 7.5
+        }
+      }
+    },
+    {
+      "id": 2,
+      "components": {
+        "name": {
+          "name": "Crate"
+        },
+        "transform": {
+          "position": [
+            0,
+            1.0,
+            0
+          ],
+          "rotation": [
+            0,
+            0.5,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "parent": -1
+        },
+        "meshRenderer": {
+          "mesh": "3f6b9c2a-1a7e-4c1d-9b2f-8d5a6e7f1023",
+          "material": "c63e9d2b-7a4f-4b0d-d5f8-4e0b3c2a13d9",
+          "castShadow": true,
+          "visible": true
+        },
+        "script": {
+          "scriptPath": "assets/scripts/spin.lua",
+          "enabled": true
+        },
+        "boxCollider": {
+          "halfExtents": [
+            1,
+            1,
+            1
+          ]
+        },
+        "audioSource": {
+          "clip": "e8501f4d-9c6b-4d2f-f7b0-6a2d5e4c35f1",
+          "volume": 0.6,
+          "loop": false,
+          "playOnStart": false,
+          "is3D": true
+        }
+      }
+    },
+    {
+      "id": 3,
+      "components": {
+        "name": {
+          "name": "Ground"
+        },
+        "transform": {
+          "position": [
+            0,
+            -0.15,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            12,
+            0.1,
+            12
+          ],
+          "parent": -1
+        },
+        "meshRenderer": {
+          "mesh": "3f6b9c2a-1a7e-4c1d-9b2f-8d5a6e7f1023",
+          "material": "c63e9d2b-7a4f-4b0d-d5f8-4e0b3c2a13d9",
+          "castShadow": false,
+          "visible": true
+        },
+        "boxCollider": {
+          "halfExtents": [
+            1,
+            1,
+            1
+          ]
+        },
+        "rigidbody": {
+          "type": "static",
+          "mass": 1.0,
+          "linearVelocity": [
+            0,
+            0,
+            0
+          ],
+          "useGravity": false,
+          "restitution": 0.0
+        }
+      }
+    },
+    {
+      "id": 4,
+      "components": {
+        "name": {
+          "name": "Main Camera"
+        },
+        "transform": {
+          "position": [
+            4.2,
+            3.1,
+            6.3
+          ],
+          "rotation": [
+            -0.42,
+            0.55,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ],
+          "parent": -1
+        },
+        "camera": {
+          "fovDegrees": 55.0,
+          "nearPlane": 0.1,
+          "farPlane": 250.0,
+          "isPrimary": true
+        }
+      }
+    }
+  ]
+}

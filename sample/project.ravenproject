@@ -1,0 +1,9 @@
+{
+  "name": "RavenEngine Sample",
+  "projectVersion": 1,
+  "assetsRoot": "assets",
+  "scenes": [
+    "scenes/sample_scene.ravenscene"
+  ],
+  "defaultScene": "scenes/sample_scene.ravenscene"
+}
