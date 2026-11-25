@@ -5,6 +5,8 @@ add_executable(raven_tests
     test_main.cpp
     test_render_graph.cpp
     test_scene.cpp
+    test_physics.cpp
+    test_script.cpp
     test_camera.cpp
     test_uuid.cpp
     test_assets.cpp

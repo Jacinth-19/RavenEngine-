@@ -70,6 +70,11 @@ struct RigidbodyComponent {
     glm::vec3 linearVelocity{0.0f};
     bool useGravity = true;
     float restitution = 0.35f;      // bounciness on ground hit
+    // Runtime state, not serialized: bodies at rest below PhysicsConfig::sleepLinearVelocity
+    // for PhysicsConfig::sleepTime seconds are put to sleep (skipped by the solver) until
+    // disturbed by an external velocity change above the wake threshold.
+    bool isAwake = true;
+    float sleepTimer = 0.0f;
 };
 
 struct BoxColliderComponent {

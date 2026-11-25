@@ -1,9 +1,12 @@
 #include <utility>
 #include "raven/script/ScriptSystem.h"
 
+// Lua headers ship without extern "C" guards — wrap them, or C++ mangles every call.
+extern "C" {
 #include <lua.h>
 #include <lauxlib.h>
 #include <lualib.h>
+}
 
 #include <cstring>
 #include <unordered_set>
@@ -100,7 +103,10 @@ bool ScriptSystem::LoadInstance(uint64_t entityRaw, const std::filesystem::path&
         return false;
     }
     // Stack: env, chunk
-    if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+    CallWithWatchdog(L);
+    const int loadStatus = lua_pcall(L, 0, 0, 0);
+    ClearWatchdog(L);
+    if (loadStatus != LUA_OK) {
         m_LastError = std::string("lua exec error (") + absolutePath.string() + "): " + lua_tostring(L, -1);
         RAVEN_LOG_ERROR("ScriptSystem: %s", m_LastError.c_str());
         lua_pop(L, 2);  // err + env
@@ -128,9 +134,12 @@ bool ScriptSystem::CallScriptFunction(int envRef, const char* name, ecs::Entity 
     lua_pushinteger(L, static_cast<lua_Integer>(entity));
     if (std::strcmp(name, "onUpdate") == 0) lua_pushnumber(L, static_cast<lua_Number>(dt));
     int nargs = std::strcmp(name, "onUpdate") == 0 ? 2 : 1;
-    if (lua_pcall(L, nargs, 0, 0) != LUA_OK) {
+    CallWithWatchdog(L);
+    const int callStatus = lua_pcall(L, nargs, 0, 0);
+    ClearWatchdog(L);
+    if (callStatus != LUA_OK) {
         m_LastError = std::string("lua runtime error in ") + name + ": " + lua_tostring(L, -1);
-        RAVEN_LOG_ERROR("ScriptSystem: %s", m_LastError.c_str());
+        RAVEN_LOG_ERROR("ScriptSystem: %s (entity %u)", m_LastError.c_str(), static_cast<uint32_t>(entity));
         lua_pop(L, 2);  // err + env
         return false;
     }
@@ -189,13 +198,40 @@ void ScriptSystem::Step(float deltaSeconds, float timeSeconds) {
 
 void ScriptSystem::ReloadScript(const std::filesystem::path& path) {
     std::string target = fs::NormalizeSlashes(path).string();
+    // Match exactly, or by suffix only on a path-component boundary (so reloading
+    // "spin.lua" never drops instances of "myspin.lua").
+    auto matches = [&](const std::string& instPath) {
+        if (instPath == target) return true;
+        if (target.size() >= instPath.size()) return false;
+        const size_t offset = instPath.size() - target.size();
+        if (instPath.compare(offset, target.size(), target) != 0) return false;
+        return offset == 0 || instPath[offset - 1] == '/';
+    };
     std::vector<uint64_t> toDrop;
     for (const auto& [raw, instance] : m_Instances) {
         std::string instPath = fs::NormalizeSlashes(fs::Path(instance.path)).string();
-        if (instPath == target || instPath.find(target) != std::string::npos) toDrop.push_back(raw);
+        if (matches(instPath)) toDrop.push_back(raw);
     }
     for (uint64_t raw : toDrop) DropInstance(raw);
     if (!toDrop.empty()) RAVEN_LOG_INFO("ScriptSystem: reloaded %zu instance(s) of %s", toDrop.size(), target.c_str());
+}
+
+void ScriptSystem::l_WatchdogHook(lua_State* L, lua_Debug* /*ar*/) {
+    // Fired once per budget; abort the running chunk with a Lua error.
+    lua_sethook(L, nullptr, 0, 0);
+    if (s_Active) ++s_Active->m_WatchdogTrips;
+    luaL_error(L, "script exceeded the per-call instruction budget");
+}
+
+void ScriptSystem::CallWithWatchdog(lua_State* L) {
+    if (m_WatchdogLimit > 0) {
+        const lua_Integer budget = static_cast<lua_Integer>(m_WatchdogLimit > 0x7FFFFFFF ? 0x7FFFFFFF : m_WatchdogLimit);
+        lua_sethook(L, l_WatchdogHook, LUA_MASKCOUNT, static_cast<int>(budget));
+    }
+}
+
+void ScriptSystem::ClearWatchdog(lua_State* L) {
+    lua_sethook(L, nullptr, 0, 0);
 }
 
 // ------------------------------------------------------------------ C API
@@ -208,7 +244,9 @@ int ScriptSystem::l_RavenLog(lua_State* L) {
 
 static ecs::Entity EntityFromArg(lua_State* L, int arg) {
     lua_Integer raw = luaL_checkinteger(L, arg);
-    return static_cast<ecs::Entity>(static_cast<uint32_t>(raw & 0xFFFFFFFFu));
+    if (raw < 0 || static_cast<uint64_t>(raw) > static_cast<uint64_t>(ecs::NullEntity))
+        return ecs::NullEntity;  // out of range — IsAlive() will reject it
+    return static_cast<ecs::Entity>(static_cast<uint32_t>(raw));
 }
 
 int ScriptSystem::l_GetPosition(lua_State* L) {
