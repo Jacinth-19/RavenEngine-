@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -32,9 +33,22 @@ struct RendererConfig {
     float resolutionScale = 0.0f;
 };
 
+// Passed to FrameParams::uiOverlay: describes the final color target the UI draws into.
+// The renderer begins a dynamic-rendering instance on that view (COLOR_ATTACHMENT_OPTIMAL,
+// loadOp=LOAD, storeOp=STORE) — the overlay callback only emits draw commands.
+struct FrameOverlayTarget {
+    VkImageView colorView = VK_NULL_HANDLE;
+    VkFormat colorFormat = VK_FORMAT_UNDEFINED;
+    uint32_t width = 0;
+    uint32_t height = 0;
+};
+
 struct FrameParams {
     float deltaTime = 0.0f;
     bool drawGrid = false;        // editor viewport reference grid
+    // Optional: editor UI overlay drawn after the scene into the final image (windowed
+    // swapchain or offscreen target). Called once per frame. Null = no overlay.
+    std::function<void(VkCommandBuffer, const FrameOverlayTarget&)> uiOverlay;
 };
 
 struct PassTiming {
@@ -92,6 +106,18 @@ public:
     // Renders one frame offscreen then writes a PNG. Used by CI smoke tests.
     bool SaveOffscreenToPng(Scene& scene, const Camera& camera, const FrameParams& params,
                             const std::filesystem::path& path, std::string* error = nullptr);
+    // Writes the CURRENT offscreen contents to a PNG (no render). Call after RenderOffscreen.
+    bool ReadOffscreenToPng(const std::filesystem::path& path, std::string* error = nullptr);
+
+    // Swapchain color format (undefined when no swapchain exists). For ImGui/backends setup.
+    VkFormat SwapchainColorFormat() const;
+    uint32_t SwapchainImageCount() const;
+
+    // Renders ONLY the given overlay into the next swapchain image and presents it
+    // (no scene pass). Editor UI path: render the scene offscreen, build the ImGui
+    // frame, then hand its draw data to this call. Returns false when the frame was
+    // skipped (swapchain stale/minimized).
+    bool RenderUiFrame(const std::function<void(VkCommandBuffer, const FrameOverlayTarget&)>& overlay);
 
     FrameStats GetFrameStats() const;
 

@@ -836,6 +836,7 @@ struct Renderer::Impl {
     void EnsureOffscreenTarget(uint32_t width, uint32_t height);
     void EnsureWindowDepth(uint32_t width, uint32_t height);
     void ApplyBarrier(VkCommandBuffer cb, const BarrierOp& op, VkImage image);
+    bool HandleDeferredResize();
     void RecordFrame(VkCommandBuffer cb, const FrameTargets& targets, Scene& scene, const Camera& camera,
                      const FrameParams& params, uint32_t slot, FrameStats& outStats);
     VkCommandBuffer BeginSlot(uint32_t slot, bool waitFence);
@@ -1569,6 +1570,20 @@ Renderer::Impl::MeshGpu& Renderer::Impl::GetOrCreateMeshGpu(const UUID& uuid) {
 namespace raven {
 
 // =====================================================================================
+bool Renderer::Impl::HandleDeferredResize() {
+    if (!resizeRequested) return false;
+    vkDeviceWaitIdle(context.Device());
+    const VkExtent2D current = swapchain->Extent();
+    const uint32_t w = requestedWidth ? requestedWidth : current.width;
+    const uint32_t h = requestedHeight ? requestedHeight : current.height;
+    if (!swapchain->Create(w, h, nullptr)) return true;  // destroyed swapchain; skip frame
+    const VkExtent2D extent = swapchain->Extent();
+    EnsureWindowDepth(extent.width, extent.height);
+    EnsurePipelines(swapchain->ImageFormat());
+    resizeRequested = false;
+    return true;  // skip this frame
+}
+
 // Renderer::Impl — RecordFrame
 // =====================================================================================
 
@@ -1855,6 +1870,16 @@ void Renderer::Impl::RecordFrame(VkCommandBuffer cb, const FrameTargets& targets
         upscale.reads = {{ historyWriteName, GraphResourceState::SampledRead }};
         upscale.writes = {{ "targetColor", GraphResourceState::ColorAttachmentWrite }};
         graph.AddPass(upscale);
+    }
+
+    if (params.uiOverlay) {
+        GraphPassDesc uiDesc;
+        uiDesc.name = "ui-overlay";
+        uiDesc.sideEffect = true;  // draws UI with no downstream consumers; never cull
+        // ColorAttachmentWrite read = LOAD the composited scene into the attachment.
+        uiDesc.reads = {{ "targetColor", GraphResourceState::ColorAttachmentWrite }};
+        uiDesc.writes = {{ "targetColor", GraphResourceState::ColorAttachmentWrite }};
+        graph.AddPass(uiDesc);
     }
 
     GraphPassDesc finalDesc;
@@ -2303,6 +2328,35 @@ void Renderer::Impl::RecordFrame(VkCommandBuffer cb, const FrameTargets& targets
             vkCmdDraw(cb, 3, 1, 0, 0);
             vkCmdEndRendering(cb);
             if (queryPool != VK_NULL_HANDLE) vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queryPool, 13);
+        } else if (pass->name == "ui-overlay" && params.uiOverlay) {
+            VkViewport viewport{0.0f, 0.0f, static_cast<float>(targets.width), static_cast<float>(targets.height), 0.0f, 1.0f};
+            VkRect2D scissor{{0, 0}, {targets.width, targets.height}};
+            vkCmdSetViewport(cb, 0, 1, &viewport);
+            vkCmdSetScissor(cb, 0, 1, &scissor);
+
+            VkRenderingAttachmentInfo colorAttachment{};
+            colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            colorAttachment.imageView = targets.colorView;
+            colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+            VkRenderingInfo renderingInfo{};
+            renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            renderingInfo.renderArea = scissor;
+            renderingInfo.layerCount = 1;
+            renderingInfo.colorAttachmentCount = 1;
+            renderingInfo.pColorAttachments = &colorAttachment;
+            vkCmdBeginRendering(cb, &renderingInfo);
+
+            FrameOverlayTarget overlay;
+            overlay.colorView = targets.colorView;
+            overlay.colorFormat = targets.colorFormat;
+            overlay.width = targets.width;
+            overlay.height = targets.height;
+            params.uiOverlay(cb, overlay);
+
+            vkCmdEndRendering(cb);
         }
         // "present" / "to-host" passes need no commands; the graph emitted the barrier.
     }
@@ -2524,18 +2578,7 @@ bool Renderer::RenderFrame(Scene& scene, const Camera& camera, const FrameParams
     if (!impl.swapchain) return false;
 
     // Deferred resize: recreate depth + pipelines with the new format/extent.
-    if (impl.resizeRequested) {
-        vkDeviceWaitIdle(impl.context.Device());
-        const VkExtent2D current = impl.swapchain->Extent();
-        const uint32_t w = impl.requestedWidth ? impl.requestedWidth : current.width;
-        const uint32_t h = impl.requestedHeight ? impl.requestedHeight : current.height;
-        if (!impl.swapchain->Create(w, h, nullptr)) return false;
-        const VkExtent2D extent = impl.swapchain->Extent();
-        impl.EnsureWindowDepth(extent.width, extent.height);
-        impl.EnsurePipelines(impl.swapchain->ImageFormat());
-        impl.resizeRequested = false;
-        return false;  // skip a frame; presentation resumes next tick
-    }
+    if (impl.HandleDeferredResize()) return false;  // skip a frame; presentation resumes next tick
 
     impl.frameStopwatch.Restart();
     const uint32_t slot = impl.frameIndex;
@@ -2665,6 +2708,131 @@ bool Renderer::RenderOffscreen(Scene& scene, const Camera& camera, const FramePa
     return true;
 }
 
+VkFormat Renderer::SwapchainColorFormat() const {
+    return (m_Impl && m_Impl->swapchain) ? m_Impl->swapchain->ImageFormat() : VK_FORMAT_UNDEFINED;
+}
+
+uint32_t Renderer::SwapchainImageCount() const {
+    return (m_Impl && m_Impl->swapchain) ? m_Impl->swapchain->ImageCount() : 0;
+}
+
+bool Renderer::RenderUiFrame(const std::function<void(VkCommandBuffer, const FrameOverlayTarget&)>& overlay) {
+    Impl& impl = *m_Impl;
+    if (!impl.swapchain) return false;
+    if (!overlay) { RAVEN_LOG_ERROR("Renderer: RenderUiFrame called without an overlay draw callback"); return false; }
+
+    // Deferred resize: recreate depth + pipelines with the new format/extent.
+    if (impl.HandleDeferredResize()) return false;  // skip a frame
+
+    const uint32_t slot = impl.frameIndex;
+
+    const vk::Swapchain::AcquireResult acquired =
+        impl.swapchain->AcquireNextImage(UINT64_MAX, impl.imageAvailable[slot]);
+    if (acquired == vk::Swapchain::AcquireResult::OutOfDate) {
+        const VkExtent2D extent = impl.swapchain->Extent();
+        impl.requestedWidth = extent.width;
+        impl.requestedHeight = extent.height;
+        impl.resizeRequested = true;
+        return false;
+    }
+    if (acquired == vk::Swapchain::AcquireResult::Failed) {
+        RAVEN_LOG_ERROR("Renderer: swapchain acquire failed (UI frame)");
+        return false;
+    }
+    const uint32_t imageIndex = impl.swapchain->CurrentImageIndex();
+    const VkExtent2D extent = impl.swapchain->Extent();
+
+    VkCommandBuffer cb = impl.BeginSlot(slot, /*waitFence*/ true);
+
+    VkImage image = impl.swapchain->Images()[imageIndex];
+    VkImageView view = impl.swapchain->ImageViews()[imageIndex];
+
+    // Swapchain image may still hold PRESENT_SRC from the previous frame (or be UNDEFINED).
+    VkImageMemoryBarrier2 toAttachment{};
+    toAttachment.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    toAttachment.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+    toAttachment.srcAccessMask = VK_ACCESS_2_NONE;
+    toAttachment.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    toAttachment.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    toAttachment.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;   // contents are fully overwritten by the UI
+    toAttachment.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    toAttachment.image = image;
+    toAttachment.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkDependencyInfo depInfo{};
+    depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    depInfo.imageMemoryBarrierCount = 1;
+    depInfo.pImageMemoryBarriers = &toAttachment;
+    vkCmdPipelineBarrier2(cb, &depInfo);
+
+    VkViewport viewport{0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0f, 1.0f};
+    VkRect2D scissor{{0, 0}, {extent.width, extent.height}};
+    vkCmdSetViewport(cb, 0, 1, &viewport);
+    vkCmdSetScissor(cb, 0, 1, &scissor);
+
+    VkRenderingAttachmentInfo colorAttachment{};
+    colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.imageView = view;
+    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;   // dockspace background covers everything
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.clearValue.color = {{0.055f, 0.063f, 0.078f, 1.0f}};
+
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea = scissor;
+    renderingInfo.layerCount = 1;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachments = &colorAttachment;
+    vkCmdBeginRendering(cb, &renderingInfo);
+
+    FrameOverlayTarget overlayTarget;
+    overlayTarget.colorView = view;
+    overlayTarget.colorFormat = impl.swapchain->ImageFormat();
+    overlayTarget.width = extent.width;
+    overlayTarget.height = extent.height;
+    overlay(cb, overlayTarget);
+
+    vkCmdEndRendering(cb);
+
+    VkImageMemoryBarrier2 toPresent{};
+    toPresent.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    toPresent.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    toPresent.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    toPresent.dstStageMask = VK_PIPELINE_STAGE_2_NONE;
+    toPresent.dstAccessMask = VK_ACCESS_2_NONE;
+    toPresent.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    toPresent.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    toPresent.image = image;
+    toPresent.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    depInfo.imageMemoryBarrierCount = 1;
+    depInfo.pImageMemoryBarriers = &toPresent;
+    vkCmdPipelineBarrier2(cb, &depInfo);
+
+    impl.SubmitSlot(slot, impl.imageAvailable[slot], impl.renderFinished[slot]);
+
+    if (acquired == vk::Swapchain::AcquireResult::Suboptimal) {
+        impl.requestedWidth = extent.width;
+        impl.requestedHeight = extent.height;
+        impl.resizeRequested = true;
+    }
+
+    switch (impl.swapchain->Present(impl.renderFinished[slot])) {
+        case vk::Swapchain::PresentResult::OutOfDate:
+            impl.requestedWidth = extent.width;
+            impl.requestedHeight = extent.height;
+            impl.resizeRequested = true;
+            break;
+        case vk::Swapchain::PresentResult::Failed:
+            RAVEN_LOG_ERROR("Renderer: swapchain present failed (UI frame)");
+            break;
+        default:
+            break;
+    }
+
+    impl.frameIndex = (slot + 1) % kFramesInFlight;
+    return true;
+}
+
 VkImageView Renderer::OffscreenColorView() const { return m_Impl ? m_Impl->offscreenColor.view : VK_NULL_HANDLE; }
 VkSampler Renderer::OffscreenSampler() const { return m_Impl ? m_Impl->offscreenSampler : VK_NULL_HANDLE; }
 VkFormat Renderer::OffscreenFormat() const { return m_Impl ? m_Impl->offscreenColor.format : VK_FORMAT_UNDEFINED; }
@@ -2677,6 +2845,10 @@ bool Renderer::SaveOffscreenToPng(Scene& scene, const Camera& camera, const Fram
         if (error) *error = "offscreen render failed";
         return false;
     }
+    return ReadOffscreenToPng(path, error);
+}
+
+bool Renderer::ReadOffscreenToPng(const std::filesystem::path& path, std::string* error) {
     Impl& impl = *m_Impl;
     VkDevice device = impl.context.Device();
     vkDeviceWaitIdle(device);
