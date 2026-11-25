@@ -45,6 +45,25 @@ enthusiast hardware.
 <p align="center"><img src="docs/media/sample-orbit.gif" width="640" alt="Sample scene orbit render, 640x360"><br>
 <em>Orbit of the sample scene — 24 frames captured offscreen by the engine itself (SwiftShader, CPU Vulkan). This is the current look: working forward renderer, real shadows, real assets. It is also genuinely far from the target aesthetic — see below.</em></p>
 
+## `ravened` — the editor, running
+
+<table>
+<tr>
+<td align="center"><img src="docs/media/editor-screenshot.png" width="480" alt="RavenEditor rendering the sample scene behind the docking UI"></td>
+<td>
+  <strong>RavenEditor, for real.</strong><br>
+  The dockspace's central node is a transparent hole: the 3D scene renders behind the UI
+  (grid, PBR crate, directional shadow) and the panels — Hierarchy, Inspector (transform /
+  mesh renderer / script / LOD), Assets browser, per-pass Profiler with GPU timings, and a
+  Logger-backed Console — edit the project live. The gizmo (W/E/R = move/rotate/scale,
+  local/world, snap) manipulates the selection through ImGuizmo; orbit/pan/dolly with the
+  mouse, F frames selection, Ctrl+S saves, Ctrl+D duplicates, Del deletes.<br><br>
+  Captured by <code>ravened --headless --frames 3 --capture editor-screenshot.png</code> on
+  SwiftShader (CI does the same on Lavapipe and uploads the capture as an artifact).
+</td>
+</tr>
+</table>
+
 ## Target aesthetic — concept art, not engine output
 
 <p align="center">
