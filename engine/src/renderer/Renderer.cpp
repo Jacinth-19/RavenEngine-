@@ -40,7 +40,6 @@ namespace {
 constexpr uint32_t kFramesInFlight = 2;
 constexpr uint32_t kTotalSlots = 3;       // 2 frames in flight + 1 dedicated offscreen slot
 constexpr uint32_t kOffscreenSlot = 2;
-constexpr uint32_t kShadowMapSize = 1024;
 const char* kEngineAssetsDirEnv = "RAVEN_ENGINE_ASSETS_DIR";
 
 std::string EngineAssetsDir() {
@@ -128,6 +127,7 @@ struct Renderer::Impl {
 
     // --- offscreen target ---
     vk::ImageResource offscreenColor;
+    uint32_t shadowMapSize = 1024;
     vk::ImageResource shadowMap;
     vk::ImageResource windowDepth;
     uint32_t windowDepthWidth = 0;
@@ -393,7 +393,7 @@ struct Renderer::Impl {
         }
 
         // Shadow map (depth-only image) created up front.
-        CreateShadowMap(kShadowMapSize);
+        CreateShadowMap(shadowMapSize);
 
         // Frame descriptor sets: bind UBO + shadow map.
         for (uint32_t i = 0; i < kTotalSlots; ++i) {
@@ -1370,7 +1370,7 @@ void Renderer::Impl::RecordFrame(VkCommandBuffer cb, const FrameTargets& targets
     // --- render graph: pass declarations + barrier solve ---
     const bool shadowPass = hasSun && sun.castShadow;
     RenderGraph graph;
-    graph.AddResource({"shadow", GraphResourceType::DepthImage, kShadowMapSize, kShadowMapSize});
+    graph.AddResource({"shadow", GraphResourceType::DepthImage, shadowMapSize, shadowMapSize});
     graph.AddResource({"mainColor", GraphResourceType::ColorImage, targets.width, targets.height});
     graph.AddResource({"mainDepth", GraphResourceType::DepthImage, targets.width, targets.height});
 
@@ -1636,6 +1636,9 @@ bool Renderer::Initialize(const RendererConfig& config, std::string* error) {
         m_Impl.reset();
         return false;
     }
+
+    // Quality tier drives shadow map size (and future MSAA/texture budgets) before base resources are built.
+    impl.shadowMapSize = QualityPresetFor(config.qualityTier).shadowMapSize;
 
     impl.CreateBaseResources();
     impl.CreateSamplers();

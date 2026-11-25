@@ -32,6 +32,16 @@ keeps frame budgets tight on integrated GPUs.
 | `third_party/`| Vendored, version-pinned dependencies (see `third_party/manifest.json`) |
 | `scripts/`    | Asset generator + CycloneDX SBOM generator                           |
 
+## Performance targets
+
+The engine is designed around a hard goal: **a AAA look on low-end hardware — 1920×1080
+and 2560×1440 at 60/120 FPS.** Every expensive feature has a tier-gated light sibling
+(shadows 512–4096², MSAA off–8×, [render-scale upscaling](docs/PERFORMANCE.md), LOD by
+projected pixels, physics sleep distance/tick rate, particle/voice budgets). Quality
+presets live in `engine/include/raven/renderer/Quality.h`; the frame-time model and
+worked verdicts for the four targets are in **[docs/PERFORMANCE.md](docs/PERFORMANCE.md)**
+and can be re-derived with `python3 scripts/perf_budget.py`.
+
 ## Building
 
 See **[docs/BUILDING.md](docs/BUILDING.md)** for Linux (Debian/Ubuntu incl. headless CPU-Vulkan
@@ -55,7 +65,7 @@ a **CycloneDX 1.5 SBOM** (from `third_party/manifest.json`) on every run. See
 
 ## Current status
 
-- Tests: **30/30 passing** (`raven_tests`).
+- Tests: **37/37 passing** (`raven_tests`).
 - Renderer gating verified: core suite builds and passes without a system Vulkan loader;
   `raven_render` + offscreen smoke test compile/run when Vulkan is available (CI).
 - Not yet implemented: the full `RavenEditor` GUI (editor/ directory is a build stub), and

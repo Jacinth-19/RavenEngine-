@@ -11,6 +11,8 @@
 
 #include <vulkan/vulkan.h>
 
+#include "raven/renderer/Quality.h"
+
 namespace raven {
 
 class Scene;
@@ -23,6 +25,8 @@ struct RendererConfig {
     bool allowCpuDeviceFallback = true;    // use lavapipe/SwiftShader-class devices when no GPU exists
     bool enablePortabilityEnumeration = false;  // macOS/iOS (MoltenVK)
     std::vector<const char*> requiredInstanceExtensions;  // from the windowing layer (glfwGetRequiredInstanceExtensions)
+    QualityTier qualityTier = QualityTier::Medium;        // picks shadows/MSAA/texture budget (see Quality.h)
+    float resolutionScale = 1.0f;          // internal render scale in (0.5, 1.0]; <1 renders low-res & resolves up
 };
 
 struct FrameParams {

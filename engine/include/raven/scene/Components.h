@@ -23,6 +23,16 @@ struct TransformComponent {
     std::vector<ecs::Entity> children;
 };
 
+// Distance-based LOD chain for the mesh on this entity. levels[0] should equal the
+// MeshRendererComponent mesh (LOD0); empty chain means "no LOD, draw LOD0 always".
+// Not serialized yet (schema addition pending); constructed at import/spawn time.
+struct LodComponent {
+    std::vector<UUID> levels;         // mesh UUIDs, LOD0..LODn
+    std::vector<float> screenHeights; // switch LOD k -> k+1 below screenHeights[k] px
+    float boundingRadius = 1.0f;      // bounding sphere radius in meters
+    float lodBias = 0.0f;             // additive to preset lodBias at draw time
+};
+
 struct MeshRendererComponent {
     UUID mesh;                  // asset UUID (nil = not set)
     UUID material;              // asset UUID (nil = fallback default material)
