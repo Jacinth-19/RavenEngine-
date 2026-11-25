@@ -45,7 +45,14 @@ jobs:
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DRAVEN_BUILD_TESTS=ON -DVulkan_INCLUDE_DIR="$PWD/third_party/Vulkan-Headers/include"
 
       - name: Build
-        run: cmake --build build -j"$(nproc)"
+        run: cmake --build build -j"$(nproc)" 2>&1 | tee build.log
+
+      - name: Upload build log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-linux
+          path: build.log
 
       - name: Test (GPU smoke test requires a CPU Vulkan device when one is present)
         run: ctest --test-dir build --output-on-failure
@@ -92,7 +99,15 @@ jobs:
         run: cmake -S . -B build -A x64 -DRAVEN_BUILD_TESTS=ON -DVulkan_INCLUDE_DIR="$env:VULKAN_SDK/Include" -DVulkan_LIBRARY="$env:VULKAN_SDK/Lib/vulkan-1.lib"
 
       - name: Build
-        run: cmake --build build --config ${{ env.BUILD_TYPE }} -j
+        shell: pwsh
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} -j 2>&1 | Tee-Object -FilePath build.log; exit $LASTEXITCODE
+
+      - name: Upload build log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-windows
+          path: build.log
 
       - name: Test (GPU smoke test self-skips without a CPU device; core suite runs fully)
         run: ctest --test-dir build -C ${{ env.BUILD_TYPE }} --output-on-failure
@@ -110,7 +125,14 @@ jobs:
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DRAVEN_BUILD_TESTS=ON
 
       - name: Build
-        run: cmake --build build -j"$(sysctl -n hw.ncpu)"
+        run: cmake --build build -j"$(sysctl -n hw.ncpu)" 2>&1 | tee build.log
+
+      - name: Upload build log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-macos
+          path: build.log
 
       - name: Test (offscreen render via MoltenVK when a Metal device is present; otherwise skipped)
         run: ctest --test-dir build --output-on-failure
