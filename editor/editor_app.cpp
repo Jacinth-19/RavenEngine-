@@ -100,41 +100,6 @@ FrameParams EditorApp::MakeFrameParams(bool uiInScene) const {
 }
 
 // ---------------------------------------------------------------------------
-// Viewport texture / resize
-// ---------------------------------------------------------------------------
-
-void* EditorApp::ViewportTexture() {
-    if (m_ViewportTexture != VK_NULL_HANDLE) return reinterpret_cast<void*>(m_ViewportTexture);
-    if (!m_DrawViewportImage) return nullptr;
-    VkImageView view = m_Renderer.OffscreenColorView();
-    if (view == VK_NULL_HANDLE) return nullptr;
-    m_ViewportTexture = ImGui_ImplVulkan_AddTexture(view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    return reinterpret_cast<void*>(m_ViewportTexture);
-}
-
-void EditorApp::ResetViewportTexture() {
-    if (m_ViewportTexture != VK_NULL_HANDLE) {
-        ImGui_ImplVulkan_RemoveTexture(m_ViewportTexture);
-        m_ViewportTexture = VK_NULL_HANDLE;
-    }
-}
-
-void EditorApp::TrackViewportSize(uint32_t width, uint32_t height) {
-    const uint32_t w = std::max<uint32_t>(64, width), h = std::max<uint32_t>(64, height);
-    m_LastViewportWidth = w;
-    m_LastViewportHeight = h;
-    // Debounce resizes: request only after the size is stable for a few frames.
-    if (w != m_Renderer.OffscreenWidth() || h != m_Renderer.OffscreenHeight()) {
-        if (++m_ViewportResizeTimerFrames < 20) return;
-        ResetViewportTexture();
-        m_Renderer.ResizeOffscreenTarget(w, h);
-        m_ViewportResizeTimerFrames = 0;
-    } else {
-        m_ViewportResizeTimerFrames = 0;
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Orbit camera
 // ---------------------------------------------------------------------------
 
@@ -152,7 +117,7 @@ void EditorApp::FrameSelected() {
     const glm::mat4 world = m_Scene.GetWorldMatrix(m_Selected);
     m_OrbitFocus = glm::vec3(world[3]);
     m_OrbitDistance = 5.0f;
-    UpdateOrbitCamera(m_LastViewportWidth, m_LastViewportHeight);
+    UpdateOrbitCamera(0, 0);
 }
 
 ecs::Entity EditorApp::PickEntity(float u, float v, float aspectRatio) const {
@@ -213,10 +178,15 @@ void EditorApp::OnFrame(float deltaSeconds) {
     m_FrameTimes[m_FrameTimeCursor] = stats.cpuFrameMs;
     m_FrameTimeCursor = (m_FrameTimeCursor + 1) % 128;
 
-    const ImGuiID dockspaceId = ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_AutoHideTabBar);
+    // PassthruCentralNode: the (empty central-node background) lets the 3D scene show through the dockspace.
+    // PassthruCentralNode: the central dock node stays EMPTY so the 3D scene (rendered
+    // into the target beneath the UI) shows through it; the Viewport toolbar strip is a
+    // thin docked panel on top of the hole.
+    const ImGuiID dockspaceId = ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_AutoHideTabBar | ImGuiDockNodeFlags_PassthruCentralNode);
     DrawMenuBar();
 
-    // One-time default layout.
+    // One-time default layout. Left/right strips are equal width so the hole is
+    // horizontally centered (the scene NDC maps 1:1 onto the full target).
     static bool layoutDone = false;
     if (!layoutDone) {
         layoutDone = true;
@@ -224,16 +194,23 @@ void EditorApp::OnFrame(float deltaSeconds) {
         ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
         ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->WorkSize);
         ImGuiID main = dockspaceId;
+        ImGuiID top = ImGui::DockBuilderSplitNode(main, ImGuiDir_Up, 0.065f, nullptr, &main);
         ImGuiID left = ImGui::DockBuilderSplitNode(main, ImGuiDir_Left, 0.18f, nullptr, &main);
-        ImGuiID right = ImGui::DockBuilderSplitNode(main, ImGuiDir_Right, 0.30f, nullptr, &main);
+        ImGuiID right = ImGui::DockBuilderSplitNode(main, ImGuiDir_Right, 0.22f, nullptr, &main);
         ImGuiID bottom = ImGui::DockBuilderSplitNode(main, ImGuiDir_Down, 0.32f, nullptr, &main);
+        ImGui::DockBuilderDockWindow("Viewport Tools", top);
         ImGui::DockBuilderDockWindow("Hierarchy", left);
         ImGui::DockBuilderDockWindow("Inspector", right);
         ImGui::DockBuilderDockWindow("Console", bottom);
         ImGui::DockBuilderDockWindow("Profiler", bottom);
         ImGui::DockBuilderDockWindow("Assets", bottom);
-        ImGui::DockBuilderDockWindow("Viewport", main);
         ImGui::DockBuilderFinish(dockspaceId);
+    }
+
+    // Rect of the central (empty) node for this frame — the viewport interaction surface.
+    if (ImGuiDockNode* central = ImGui::DockBuilderGetCentralNode(dockspaceId)) {
+        if (central->Size.x > 4.0f && central->Size.y > 4.0f)
+            m_ViewportRect = ImVec4(central->Pos.x, central->Pos.y, central->Size.x, central->Size.y);
     }
 
     DrawViewportPanel();
@@ -254,7 +231,6 @@ void EditorApp::OnFrame(float deltaSeconds) {
 }
 
 void EditorApp::Shutdown() {
-    ResetViewportTexture();
     m_Log.clear();
 }
 
@@ -339,13 +315,13 @@ void EditorApp::DrawAboutModal() {
 }
 
 // ---------------------------------------------------------------------------
-// Viewport panel (3D scene + gizmo)
+// Viewport panel (toolbar strip + gizmo over the scene hole)
 // ---------------------------------------------------------------------------
 
 void EditorApp::DrawViewportPanel() {
-    ImGui::Begin("Viewport", nullptr, ImGuiWindowFlags_NoCollapse);
+    // Thin docked strip at the top of the central hole: gizmo ops + toggles.
+    ImGui::Begin("Viewport Tools", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
-    // Toolbar: gizmo operations + grid + focus.
     if (ImGui::RadioButton("Move##gizmo", m_GizmoOperation == 0)) m_GizmoOperation = 0;
     ImGui::SameLine();
     if (ImGui::RadioButton("Rotate##gizmo", m_GizmoOperation == 1)) m_GizmoOperation = 1;
@@ -360,45 +336,27 @@ void EditorApp::DrawViewportPanel() {
     ImGui::SameLine();
     if (ImGui::Button("Focus##focusSel")) FrameSelected();
 
-    ImGui::Separator();
-
-    const ImVec2 avail = ImGui::GetContentRegionAvail();
-    const uint32_t w = static_cast<uint32_t>(std::max(64.0f, avail.x));
-    const uint32_t h = static_cast<uint32_t>(std::max(64.0f, avail.y));
-    TrackViewportSize(w, h);
-
-    const float aspect = avail.y > 0.0f ? avail.x / avail.y : 1.0f;
-    UpdateOrbitCamera(w, h);
-
-    void* texture = ViewportTexture();
-    if (texture) {
-        ImGui::Image(reinterpret_cast<ImTextureID>(texture), avail, ImVec2(0, 0), ImVec2(1, 1));
-    } else {
-        // Headless / not-yet-ready: keep layout with an aspect-correct placeholder.
-        ImGui::InvisibleButton("viewport-placeholder", avail);
-        const ImVec2 rectMin = ImGui::GetItemRectMin();
-        ImGui::GetWindowDrawList()->AddRectFilled(rectMin, ImGui::GetItemRectMax(), IM_COL32(16, 18, 24, 255));
-        const char* msg = "offscreen viewport unavailable";
-        const ImVec2 textSize = ImGui::CalcTextSize(msg);
-        ImGui::GetWindowDrawList()->AddText(ImVec2(rectMin.x + (avail.x - textSize.x) * 0.5f, rectMin.y + (avail.y - textSize.y) * 0.5f),
-                                            IM_COL32(140, 150, 165, 255), msg);
-    }
-
-    // Mouse interaction on the image area.
-    const ImVec2 imageMin = ImGui::GetItemRectMin();
-    const ImVec2 imageMax = ImGui::GetItemRectMax();
-    HandleViewportInput(imageMin, imageMax);
-    DrawGizmo(imageMin, imageMax, aspect);
-
     ImGui::End();
+
+    // The scene is already in the target being drawn (rendered beneath this UI):
+    // the central dock node is a transparent hole. The gizmo and picking live on the
+    // full target extent; interaction is gated to the hole rect.
+    const ImGuiIO& io = ImGui::GetIO();
+    const ImVec2 fullExtent(io.DisplaySize.x, io.DisplaySize.y);
+    const ImVec2 viewportMin(m_ViewportRect.x, m_ViewportRect.y);
+    const ImVec2 viewportMax(m_ViewportRect.x + m_ViewportRect.z, m_ViewportRect.y + m_ViewportRect.w);
+    const float aspectRatio = fullExtent.y > 0.0f ? fullExtent.x / fullExtent.y : 1.0f;
+
+    HandleViewportInput(viewportMin, viewportMax, fullExtent);
+    DrawGizmo(fullExtent, aspectRatio);
 }
 
-void EditorApp::HandleViewportInput(const ImVec2& imageMin, const ImVec2& imageMax) {
+void EditorApp::HandleViewportInput(const ImVec2& viewportMin, const ImVec2& viewportMax, const ImVec2& fullExtent) {
     const ImGuiIO& io = ImGui::GetIO();
-    const ImVec2 imageSize(imageMax.x - imageMin.x, imageMax.y - imageMin.y);
-    if (imageSize.x <= 1.0f || imageSize.y <= 1.0f) return;
+    const ImVec2 viewportSize(viewportMax.x - viewportMin.x, viewportMax.y - viewportMin.y);
+    if (viewportSize.x <= 4.0f || viewportSize.y <= 4.0f || fullExtent.x <= 0.0f) return;
 
-    const bool hovered = ImGui::IsMouseHoveringRect(imageMin, imageMax);
+    const bool hovered = ImGui::IsMouseHoveringRect(viewportMin, viewportMax);
     const ImVec2 mouse = io.MousePos;
 
     // Wheel: dolly.
@@ -421,9 +379,11 @@ void EditorApp::HandleViewportInput(const ImVec2& imageMin, const ImVec2& imageM
     }
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
         if (draggingOrbit && dragDistancePx < 4.0f && hovered) {
-            const float u = (mouse.x - imageMin.x) / imageSize.x;
-            const float v = (mouse.y - imageMin.y) / imageSize.y;
-            const ecs::Entity picked = PickEntity(u, v, imageSize.x / imageSize.y);
+            // Rays are computed in FULL target space — the scene projects onto the full image.
+            const float u = mouse.x / fullExtent.x;
+            const float v = mouse.y / fullExtent.y;
+            const float aspect = fullExtent.x / fullExtent.y;
+            const ecs::Entity picked = PickEntity(u, v, aspect);
             if (picked != ecs::NullEntity) m_Selected = picked;
         }
         draggingOrbit = false;
@@ -450,14 +410,14 @@ void EditorApp::HandleViewportInput(const ImVec2& imageMin, const ImVec2& imageM
     }
 }
 
-void EditorApp::DrawGizmo(const ImVec2& imageMin, const ImVec2& imageMax, float aspectRatio) {
+void EditorApp::DrawGizmo(const ImVec2& fullExtent, float aspectRatio) {
     if (m_Selected == ecs::NullEntity || !m_Scene.World().IsAlive(m_Selected)) return;
     if (!m_Scene.World().HasComponent<TransformComponent>(m_Selected)) return;
 
     ImGuizmo::BeginFrame();
     ImGuizmo::SetOrthographic(false);
-    ImGuizmo::SetDrawlist();   // current window draw list
-    ImGuizmo::SetRect(imageMin.x, imageMin.y, imageMax.x - imageMin.x, imageMax.y - imageMin.y);
+    ImGuizmo::SetDrawlist(ImGui::GetForegroundDrawList());   // over the dockspace hole
+    ImGuizmo::SetRect(0.0f, 0.0f, fullExtent.x, fullExtent.y);
 
     glm::mat4 view = m_Camera.ViewMatrix();
     glm::mat4 proj = m_Camera.ProjectionMatrix(aspectRatio);

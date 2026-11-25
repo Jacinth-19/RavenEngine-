@@ -1,11 +1,14 @@
 // RavenEditor — real-time editor application (docking ImGui + Vulkan).
 //
-// The editor renders the scene offscreen into an image shown in the Viewport
-// panel (with grid, picking, ImGuizmo manipulation), while the classic panels
-// (Hierarchy / Inspector / Assets / Profiler / Console) edit project data live.
+// The 3D scene renders behind the docking UI (the dockspace's central node is
+// left EMPTY with PassthruCentralNode, so the scene shows through) and is
+// framed by the panels: Hierarchy | Viewport Tools strip | Inspector,
+// Console/Profiler/Assets along the bottom. The viewport interaction surface is
+// the central node rect; orbit/pan/dolly/pick and the ImGuizmo operate on it.
 //
 // Two run modes (chosen in main.cpp):
-//   windowed — GLFW window + swapchain; UI presented via Renderer::RenderUiFrame
+//   windowed — GLFW window + swapchain; the scene and the UI render into the
+//              swapchain in one frame (Renderer::RenderFrame with uiInScene)
 //   headless — no window; scene + UI render into the offscreen target and the
 //              result is written to a PNG (used on displays-less hosts/CI)
 #pragma once
@@ -41,18 +44,14 @@ public:
     bool LoadProject(const std::filesystem::path& projectDir, std::string* error);
 
     // Editor lifetime
-    void OnFrame(float deltaSeconds);   // builds the ImGui frame (panels)
+    void OnFrame(float deltaSeconds);   // builds the ImGui frame (panels + viewport overlay)
     void Shutdown();
-
-    // When false (headless), the Viewport panel does not sample the offscreen image
-    // (it would be a feedback loop with the in-flight UI pass).
-    void SetDrawViewportImage(bool enabled) { m_DrawViewportImage = enabled; }
 
     Camera& ViewportCamera() { return m_Camera; }
     const Scene& GetScene() const { return m_Scene; }
     Scene& GetScene() { return m_Scene; }
-    // When uiInScene is true the frame draws the UI into the offscreen target
-    // itself (headless capture mode). Windowed mode presents the UI separately.
+    // The frame always draws the UI overlay into its color target (swapchain when
+    // windowed via RenderFrame, offscreen when headless via RenderOffscreen).
     FrameParams MakeFrameParams(bool uiInScene) const;
 
     // Selection
@@ -61,14 +60,6 @@ public:
     // --- shared helpers used by both modes ----------------------------------
     void RegisterLogCapture();          // hooks Logger -> console panel
     void AddLogLine(int level, const std::string& text);
-
-    // ImGui texture for the offscreen viewport image (registers once).
-    // Returns the ImTextureID (as void*) or nullptr until the offscreen target exists.
-    void* ViewportTexture();
-    void ResetViewportTexture();
-
-    // Viewport resize bookkeeping (call per frame with the panel's content size).
-    void TrackViewportSize(uint32_t width, uint32_t height);
 
     // Panel visibility toggles (View menu)
     bool m_ShowHierarchy = true;
@@ -96,8 +87,10 @@ private:
 
     // --- 3D viewport helpers ---------------------------------------------------
     void UpdateOrbitCamera(uint32_t viewportWidth, uint32_t viewportHeight);
-    void HandleViewportInput(const ImVec2& imageMin, const ImVec2& imageMax);
-    void DrawGizmo(const ImVec2& imageMin, const ImVec2& imageMax, float aspectRatio);
+    // The 3D scene is rendered for the full target; interaction is constrained to
+    // the central dock node (the "viewport hole").
+    void HandleViewportInput(const ImVec2& viewportMin, const ImVec2& viewportMax, const ImVec2& fullExtent);
+    void DrawGizmo(const ImVec2& fullExtent, float aspectRatio);
     ecs::Entity PickEntity(float u, float v, float aspectRatio) const;
     void FrameSelected();
 
@@ -128,10 +121,9 @@ private:
     bool m_CameraInitialized = false;
 
     // --- viewport -----------------------------------------------------------------
-    VkDescriptorSet m_ViewportTexture = VK_NULL_HANDLE;   // ImTextureID carrier
-    uint32_t m_LastViewportWidth = 0;
-    uint32_t m_LastViewportHeight = 0;
-    uint32_t m_ViewportResizeTimerFrames = 0;
+    // Rect of the central (empty) dock node — the scene shows through it and it is
+    // the interaction surface. In ImVec4 form: x, y, width, height (pixels).
+    ImVec4 m_ViewportRect = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
     bool m_GizmoSnap = false;
     int m_GizmoOperation = 0;   // 0 translate, 1 rotate, 2 scale
     bool m_GizmoLocal = true;
@@ -145,7 +137,6 @@ private:
 
     Renderer& m_Renderer;
     QualityTier m_Tier = QualityTier::High;
-    bool m_DrawViewportImage = true;
     bool m_ShowGrid = true;
     float m_FrameTimes[128] = {};
     int m_FrameTimeCursor = 0;

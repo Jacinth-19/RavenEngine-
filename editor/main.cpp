@@ -102,9 +102,6 @@ bool InitImGuiVulkan(VkInstance instance, VkPhysicalDevice physicalDevice, VkDev
     return ImGui_ImplVulkan_Init(&info);
 }
 
-void DrawImGuiOverlay(VkCommandBuffer cb, const raven::FrameOverlayTarget&) {
-    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cb);
-}
 
 } // namespace
 
@@ -205,8 +202,6 @@ int main(int argc, char** argv) {
             renderer.Shutdown();
             return 1;
         }
-        app.SetDrawViewportImage(false);   // no feedback into the in-flight UI pass
-        app.ResetViewportTexture();
 
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
@@ -292,17 +287,16 @@ int main(int argc, char** argv) {
         const float deltaTime = static_cast<float>(now - lastTime);
         lastTime = now;
 
-        // Scene renders into the offscreen target (shown inside the Viewport panel).
-        raven::FrameParams sceneParams = app.MakeFrameParams(/*uiInScene=*/false);
-        renderer.RenderOffscreen(app.GetScene(), app.ViewportCamera(), sceneParams);
-
-        // UI renders into the swapchain.
+        // One pass: scene renders into the swapchain and the UI overlay draws on top
+        // (the central dock node is a transparent hole showing the scene).
         ImGui_ImplGlfw_NewFrame();
         ImGui_ImplVulkan_NewFrame();
         ImGui::NewFrame();
         app.OnFrame(deltaTime);
         ImGui::Render();
-        renderer.RenderUiFrame(&DrawImGuiOverlay);
+        raven::FrameParams params = app.MakeFrameParams(/*uiInScene=*/true);
+        params.deltaTime = deltaTime;
+        renderer.RenderFrame(app.GetScene(), app.ViewportCamera(), params);
     }
 
     app.Shutdown();              // drops ImGui descriptor sets before backend shutdown
