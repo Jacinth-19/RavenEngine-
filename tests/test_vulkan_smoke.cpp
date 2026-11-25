@@ -8,6 +8,7 @@
 #include <fstream>
 #include <memory>
 #include <vector>
+#include <cstdio>
 
 #include <glm/glm.hpp>
 #include <stb_image.h>
@@ -65,7 +66,20 @@ RAVEN_TEST("vulkan: offscreen render of the sample scene produces lit pixels") {
     config.applicationName = "RavenEngine_Test";
     config.enableValidation = false;
     config.allowCpuDeviceFallback = true;   // Lavapipe on CI
-    REQUIRE(renderer.Initialize(config, &error));
+#if defined(__APPLE__)
+    config.enablePortabilityEnumeration = true;  // MoltenVK requires this flag
+#endif
+    if (!renderer.Initialize(config, &error)) {
+        // A GPU-less environment (e.g. a build-only CI runner) may lack any Vulkan device.
+        // Skipping is only acceptable when the runner is not GPU-mandatory; Linux CI sets
+        // RAVEN_REQUIRE_GPU=1 so device-creation regressions on Lavapipe still fail hard.
+        const char* require = std::getenv("RAVEN_REQUIRE_GPU");
+        if (require && require[0] == '1') {
+            FAIL("RAVEN_REQUIRE_GPU=1 but Vulkan device creation failed: " + (error.empty() ? std::string("unknown error") : error));
+        }
+        std::fprintf(stderr, "[ SKIP ] no Vulkan device available — smoke test skipped (%s)\n", error.c_str());
+        return;
+    }
     renderer.RegisterAssetUploadHandler();
     REQUIRE(renderer.CreateOffscreenTarget(320, 240, &error));
 

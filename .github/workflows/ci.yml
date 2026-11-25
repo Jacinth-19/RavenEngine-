@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, "arena/**"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  linux:
+    name: Linux (Ubuntu, Lavapipe) — build + tests + SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies + CPU Vulkan (Lavapipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build g++ \
+            libvulkan-dev mesa-vulkan-drivers vulkan-tools \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev xorgproto \
+            python3
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DRAVEN_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Test (incl. offscreen Vulkan render on Lavapipe)
+        run: ctest --test-dir build --output-on-failure
+        env:
+          RAVEN_REQUIRE_GPU: "1"   # fail hard if the Lavapipe device cannot render the sample scene
+
+      - name: Upload offscreen render from the smoke test
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: offscreen-smoke-render
+          path: /tmp/raven_test_offscreen.png
+          if-no-files-found: warn
+
+      - name: Generate SBOM (CycloneDX 1.5)
+        run: python3 scripts/generate_sbom.py --output build/sbom.cdx.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: build/sbom.cdx.json
+
+  windows:
+    name: Windows (MSVC) — build + core tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Vulkan SDK (LunarG, via Chocolatey)
+        run: choco install vulkan-sdk -y --no-progress
+
+      - name: Locate Vulkan SDK
+        id: vk
+        shell: pwsh
+        run: |
+          $root = "C:\VulkanSDK"
+          $dir = Get-ChildItem $root -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          if (-not $dir) { throw "Vulkan SDK not found under $root" }
+          echo "VULKAN_SDK=$($dir.FullName)" >> $env:GITHUB_ENV
+
+      - name: Configure
+        shell: pwsh
+        run: cmake -S . -B build -A x64 -DRAVEN_BUILD_TESTS=ON -DVulkan_INCLUDE_DIR="$env:VULKAN_SDK/Include" -DVulkan_LIBRARY="$env:VULKAN_SDK/Lib/vulkan-1.lib"
+
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} -j
+
+      - name: Test (GPU smoke test self-skips without a CPU device; core suite runs fully)
+        run: ctest --test-dir build -C ${{ env.BUILD_TYPE }} --output-on-failure
+
+  macos:
+    name: macOS (MoltenVK) — build + core tests
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools + Vulkan (MoltenVK)
+        run: brew install cmake ninja vulkan-loader molten-vk glfw
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DRAVEN_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build -j"$(sysctl -n hw.ncpu)"
+
+      - name: Test (offscreen render via MoltenVK when a Metal device is present; otherwise skipped)
+        run: ctest --test-dir build --output-on-failure
+
+  engine-check:
+    name: Build summary + file inventory
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Repository sanity
+        run: |
+          test -f LICENSE
+          test -f README.md
+          test -f third_party/manifest.json
+          test -f assets/engine/shaders/forward.frag.spv
+          echo "Repository layout OK"

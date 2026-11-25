@@ -84,3 +84,5 @@ inline int RunAll() {
          } } while (0)
 
 #define REQUIRE(cond) CHECK(cond)
+
+#define FAIL(detail) ::raven::test::Fail("RAVEN_REQUIRE_GPU", __FILE__, __LINE__, (detail))

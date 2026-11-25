@@ -1,0 +1,13 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Note: RavenEngine's C++ dependencies are vendored under third_party/ with pinned
+  # versions (third_party/manifest.json) and are NOT managed by a package manager, so
+  # Dependabot cannot watch them. Dependency scanning is instead covered by:
+  #   - the CycloneDX SBOM generated on every Linux CI run (upload artifact `sbom`), and
+  #   - docs/SECURITY.md (reporting + periodic manual audit procedure).

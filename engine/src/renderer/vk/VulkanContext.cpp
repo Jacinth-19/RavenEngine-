@@ -94,7 +94,27 @@ bool VulkanContext::CreateInstance(const VulkanContextConfig& config, std::strin
     std::vector<const char*> extensions(config.requiredInstanceExtensions);
     std::vector<const char*> layers;
 
-    if (config.enablePortabilityEnumeration) {
+    // Only request the portability enumeration extension when the loader has it
+    // (always present behind MoltenVK; absent on Linux) — otherwise instance creation fails.
+    bool portabilitySupported = false;
+    {
+        uint32_t extensionCount = 0;
+        vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, nullptr);
+        std::vector<VkExtensionProperties> available(extensionCount);
+        vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, available.data());
+        for (const auto& ext : available) {
+            if (std::strcmp(ext.extensionName, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME) == 0) {
+                portabilitySupported = true;
+                break;
+            }
+        }
+    }
+    const bool usePortabilityEnumeration = config.enablePortabilityEnumeration && portabilitySupported;
+    if (config.enablePortabilityEnumeration && !portabilitySupported) {
+        // Not an error: macOS builds without MoltenVK installed simply skip the extension.
+        RAVEN_LOG_WARN("VulkanContext: VK_KHR_portability_enumeration requested but not supported by this loader — ignoring");
+    }
+    if (usePortabilityEnumeration) {
         extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
     }
 
@@ -123,7 +143,7 @@ bool VulkanContext::CreateInstance(const VulkanContextConfig& config, std::strin
     createInfo.ppEnabledExtensionNames = extensions.empty() ? nullptr : extensions.data();
     createInfo.enabledLayerCount = static_cast<uint32_t>(layers.size());
     createInfo.ppEnabledLayerNames = layers.empty() ? nullptr : layers.data();
-    if (config.enablePortabilityEnumeration) {
+    if (usePortabilityEnumeration) {
         createInfo.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
     }
 
