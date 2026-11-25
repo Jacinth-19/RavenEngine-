@@ -104,29 +104,58 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Locate Vulkan (LunarG SDK if present, else Windows SDK import lib + vendored headers)
+      - name: Install Vulkan SDK (LunarG, via Chocolatey — best effort)
+        continue-on-error: true
+        run: choco install vulkan-sdk -y --no-progress
+
+      - name: Locate Vulkan (best effort; Windows builds degrade gracefully to core-only)
         shell: pwsh
         run: |
-          # The windows-latest runner has dropped the preinstalled LunarG SDK and the
-          # chocolatey package no longer installs it. Vulkan needs only headers (vendored
-          # in-tree) and vulkan-1.lib, which ships with the Windows SDK (um/x64) — no
-          # network install required. Prefer a real LunarG SDK when one is present.
-          if ($env:VULKAN_SDK -and (Test-Path "$env:VULKAN_SDK/Include/vulkan/vulkan.h") -and (Test-Path "$env:VULKAN_SDK/Lib/vulkan-1.lib")) {
-            Write-Host "Using LunarG SDK: $env:VULKAN_SDK"
-            echo "VULKAN_INCLUDE=$env:VULKAN_SDK/Include" >> $env:GITHUB_ENV
-            echo "VULKAN_LIB=$env:VULKAN_SDK/Lib/vulkan-1.lib" >> $env:GITHUB_ENV
-            exit 0
+          # windows-latest no longer reliably provides a LunarG SDK (preinstall dropped
+          # and the chocolatey package may no-op), so search every plausible root and
+          # degrade to a core-only build when no import library can be found. A
+          # ::warning:: annotation is emitted in that case — the Linux/macOS legs
+          # always build the Vulkan renderer.
+          $candidates = @(
+            $env:VULKAN_SDK,
+            "C:\VulkanSDK",
+            "C:\Program Files\LunarG",
+            "C:\Program Files (x86)\LunarG",
+            "C:\Program Files\VulkanSDK",
+            "C:\ProgramData\chocolatey\lib",
+            "$env:ChocolateyInstall\lib",
+            "C:\Program Files (x86)\Windows Kits"
+          ) | Where-Object { $_ }
+          $include = $null; $lib = $null
+          foreach ($root in $candidates) {
+            if (-not (Test-Path $root)) { continue }
+            Write-Host "Scanning $root ..."
+            $hdr = Get-ChildItem $root -Recurse -Filter "vulkan.h" -ErrorAction SilentlyContinue |
+                   Where-Object { $_.FullName -match 'Include[\\/]vulkan[\\/]vulkan\.h$' } | Select-Object -First 1
+            $vklib = Get-ChildItem $root -Recurse -Filter "vulkan-1.lib" -ErrorAction SilentlyContinue |
+                     Sort-Object { $_.FullName } -Descending | Select-Object -First 1
+            if ($hdr) { $include = Split-Path (Split-Path (Split-Path $hdr.FullName)) }
+            if ($vklib) { $lib = $vklib.FullName }
+            if ($lib) { Write-Host "Found vulkan-1.lib: $lib (include: $include)"; break }
           }
-          $vulkanLib = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Lib" -Recurse -Filter "vulkan-1.lib" -ErrorAction SilentlyContinue |
-                       Where-Object { $_.FullName -match 'um\x64' } | Sort-Object FullName -Descending | Select-Object -First 1
-          if (-not $vulkanLib) { throw "vulkan-1.lib not found under the Windows SDK (C:\Program Files (x86)\Windows Kits\10\Lib)" }
-          Write-Host "Using Windows SDK import library: $($vulkanLib.FullName)"
-          echo "VULKAN_INCLUDE=$env:GITHUB_WORKSPACE/third_party/Vulkan-Headers/include" >> $env:GITHUB_ENV
-          echo "VULKAN_LIB=$($vulkanLib.FullName)" >> $env:GITHUB_ENV
+          if (-not $lib) { $include = $null }   # no loader to link -> core-only build
+          if (-not $include) { $include = "$env:GITHUB_WORKSPACE/third_party/Vulkan-Headers/include" }
+          if ($lib) {
+            echo "VULKAN_INCLUDE=$include" >> $env:GITHUB_ENV
+            echo "VULKAN_LIB=$lib" >> $env:GITHUB_ENV
+          } else {
+            Write-Host "::warning::No Vulkan import library found on this runner — building raven_core + raven_tests only (GPU renderer skipped)."
+            echo "VULKAN_CORE_ONLY=1" >> $env:GITHUB_ENV
+          }
 
       - name: Configure
         shell: pwsh
-        run: cmake -S . -B build -A x64 -DRAVEN_BUILD_TESTS=ON -DVulkan_INCLUDE_DIR="$env:VULKAN_INCLUDE" -DVulkan_LIBRARY="$env:VULKAN_LIB"
+        run: |
+          if ($env:VULKAN_CORE_ONLY) {
+            cmake -S . -B build -A x64 -DRAVEN_BUILD_TESTS=ON
+          } else {
+            cmake -S . -B build -A x64 -DRAVEN_BUILD_TESTS=ON -DVulkan_INCLUDE_DIR="$env:VULKAN_INCLUDE" -DVulkan_LIBRARY="$env:VULKAN_LIB"
+          }
 
       - name: Build
         shell: pwsh
