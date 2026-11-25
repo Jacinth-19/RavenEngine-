@@ -1105,7 +1105,7 @@ VkAccessFlags2 AccessMaskFor(GraphResourceState state, bool isDst) {
 
 } // namespace
 
-vk::ImageResource CreateColorImage2D(const vk::VulkanContext& context, uint32_t width, uint32_t height, VkFormat format) {
+vk::ImageResource CreateColorImage2D(vk::VulkanContext& context, uint32_t width, uint32_t height, VkFormat format) {
     vk::ImageResource res;
     res.format = format;
     res.width = width;
@@ -1139,7 +1139,7 @@ vk::ImageResource CreateColorImage2D(const vk::VulkanContext& context, uint32_t 
     return res;
 }
 
-vk::ImageResource CreateDepthImage2D(const vk::VulkanContext& context, uint32_t width, uint32_t height) {
+vk::ImageResource CreateDepthImage2D(vk::VulkanContext& context, uint32_t width, uint32_t height) {
     vk::ImageResource res;
     res.format = VK_FORMAT_D32_SFLOAT;
     res.width = width;

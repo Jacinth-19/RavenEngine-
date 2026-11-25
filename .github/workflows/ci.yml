@@ -13,16 +13,22 @@ env:
 jobs:
   linux:
     name: Linux (Ubuntu, Lavapipe) — build + tests + SBOM
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
       - name: Install build dependencies + CPU Vulkan (Lavapipe)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          set -e
+          # Ubuntu mirrors are occasionally flaky; retry apt-get update and tolerate stale lists.
+          for attempt in 1 2 3; do
+            if sudo apt-get update -o Acquire::Retries=3; then break; fi
+            echo "apt-get update attempt $attempt failed; retrying..."
+            sleep 5
+          done
+          sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
             cmake ninja-build g++ \
-            libvulkan-dev mesa-vulkan-drivers vulkan-tools \
+            libvulkan-dev mesa-vulkan-drivers \
             libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev xorgproto \
             python3
 

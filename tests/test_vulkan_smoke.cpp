@@ -53,7 +53,11 @@ fs::path CreateTempProjectCopy() {
 
 RAVEN_TEST("vulkan: offscreen render of the sample scene produces lit pixels") {
     // Shaders are looked up via RAVEN_ENGINE_ASSETS_DIR (env wins over compile-time default).
+#ifdef _WIN32
+    _putenv_s("RAVEN_ENGINE_ASSETS_DIR", RAVEN_ENGINE_ASSETS_DIR);
+#else
     setenv("RAVEN_ENGINE_ASSETS_DIR", RAVEN_ENGINE_ASSETS_DIR, /*overwrite*/ 0);
+#endif
 
     const fs::path project = CreateTempProjectCopy();
 
