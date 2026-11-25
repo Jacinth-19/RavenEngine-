@@ -21,7 +21,10 @@ The CMake scripts are designed to **degrade gracefully** when optional system pi
 
 - **No system Vulkan** → `raven_render` and the GUI apps are skipped. `raven_core` and the
   `raven_tests` suite still build and run.
-- **No X11/Wayland dev headers (Linux)** → the editor/sandbox GUI apps are skipped.
+- **No X11/Wayland dev headers (Linux)** → the editor/sandbox GUI apps are skipped by default;
+  configure with `-DRAVEN_GUI_HEADLESS=ON` to build the vendored GLFW with the **null windowing
+  platform** instead. `ravened` and `raven-sandbox` then run in an offscreen headless mode
+  (scene + UI rendered to the offscreen target; `ravened --headless` also writes a PNG capture).
 - **No Vulkan on the runner** → the GPU smoke test self-skips, unless `RAVEN_REQUIRE_GPU=1` is
   set, in which case device-creation failure is a hard test failure (used on CI).
 
@@ -38,6 +41,23 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DRAVEN_BUILD_TESTS=ON
 cmake --build build -j"$(nproc)"
 ctest --test-dir build --output-on-failure
 ```
+
+### Headless editor / sandbox smoke runs
+
+Without a display (CI, null-platform GLFW), both apps fall back to an offscreen path:
+
+```sh
+# Editor: render N frames of the sample project (scene + UI) and write a PNG
+./build/bin/ravened --headless --frames 3 --capture editor_capture.png
+
+# Sandbox: render N frames offscreen and print average CPU frame time
+./build/bin/raven-sandbox --offscreen --frames 120 --tier medium
+```
+
+`ravened --help` lists all flags. In windowed mode, `ravened` opens the docking editor
+(Hierarchy / Inspector / Viewport / Assets / Profiler / Console); the Viewport panel
+previews the offscreen scene render, with an ImGuizmo translate/rotate/scale gizmo,
+entity picking, and save/load of the sample scene.
 
 ### Headless / CPU-only rendering (Lavapipe)
 
@@ -144,6 +164,7 @@ smoke test). macOS runners without a Metal device available will skip the GPU sm
 | `RAVEN_BUILD_SANDBOX`     | ON      | Build the sandbox (skipped without GUI deps)|
 | `RAVEN_ENABLE_ASAN`       | OFF     | AddressSanitizer for engine targets        |
 | `RAVEN_FORCE_VENDORED_GLFW` | OFF   | Ignore system GLFW, build vendored 3.4     |
+| `RAVEN_GUI_HEADLESS`      | OFF     | No X11/Wayland: build null-platform GLFW so the GUI apps run headless (offscreen) |
 
 ## Maintenance
 

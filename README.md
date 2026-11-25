@@ -8,7 +8,7 @@
   <em>A low-resource-focused C++20 Vulkan game engine — AAA ambitions on everyday hardware.</em><br>
   <img alt="CI" src="https://github.com/Jacinth-19/RavenEngine-/actions/workflows/ci.yml/badge.svg">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg">
-  <img alt="Tests: 37 core + 1 GPU smoke" src="https://img.shields.io/badge/tests-37%2B1%20passing-brightgreen.svg">
+  <img alt="Tests: 52 core + 1 GPU smoke" src="https://img.shields.io/badge/tests-52%2B1%20passing-brightgreen.svg">
 </p>
 
 <p align="center"><img src="docs/media/ravenengine-splash.jpg" alt="RavenEngine splash screen artwork" width="720"><br>
@@ -65,14 +65,14 @@ enthusiast hardware.
 - **Quality tiers** (`Quality.h`) — Low/Medium/High/Ultra presets (render scale, shadow size, MSAA, texture/aniso caps, light/particle/voice budgets, physics tick + sleep distance, LOD bias) with a unit-tested LOD projection model.
 - **CI** — Linux (Lavapipe offscreen render + CycloneDX SBOM artifact), Windows (MSVC), macOS (MoltenVK), all green; `v0.1.0` tagged; binary snapshot in `dist/`.
 
-Tests: **37 core suites + 1 Vulkan smoke test** (38 total when a Vulkan device is present, e.g. CI on Lavapipe or locally on SwiftShader/Mesa).
+Tests: **52 core suites + 1 Vulkan smoke test** (53 total; the GPU smoke tests require a Vulkan device — CI runs them on Lavapipe, locally on SwiftShader).
 
 ## What's *not* done yet (the honest list)
 
-- `RavenEditor` GUI and `raven-sandbox` are build stubs — no editor is running today.
-- SSAO/SSR/TAA/bloom/CSM/FSR are tier **gates + cost model**, not renderer features.
-- LOD selection is implemented and unit-tested; not yet wired into scene serialization or the draw path.
+- SSAO/SSR/TAA/bloom/upscale: shipped as real GPU passes with per-tier gates (MSAA/SSAO/TAA/SSR/bloom/upscale), not just a cost model.
+- LOD selection is implemented, unit-tested, serialized in scenes, and consumed by the draw path (per-tier LOD bias + max distance).
 - Render-scale upscaling is the engine's supported path (config + resolve contract in docs); no vendored FSR/DLSS.
+- `raven-sandbox` still needs a manual orbit to look at the scene interactively; `RavenEditor` is functional but young (see below).
 - **The engine does not yet look like the reference the project is dreaming about** (path-traced AAA interiors). Closing that gap is the feature roadmap — see `docs/PERFORMANCE.md` for the budget math on how to get there on low-end hardware.
 
 ## Headless Vulkan on any machine (SwiftShader)
@@ -85,8 +85,8 @@ see **[docs/BUILDING.md § CPU Vulkan via SwiftShader](docs/BUILDING.md)**.
 | Path          | Contents                                                             |
 | ------------- | ------------------------------------------------------------------- |
 | `engine/`     | `raven_core` (renderer-agnostic) + `raven_render` (Vulkan 1.3)      |
-| `editor/`     | Editor application stub (`RavenEditor`)                             |
-| `sandbox/`    | Minimal runtime stub (`raven-sandbox`)                              |
+| `editor/`     | `ravened` — docking editor: hierarchy/inspector/viewport/console/profiler/assets |
+| `sandbox/`    | `raven-sandbox` — minimal runnable app (windowed + offscreen smoke run)  |
 | `sample/`     | Sample project: crate mesh, PBR materials, scene, Lua script, audio |
 | `assets/`     | Engine assets: GLSL + compiled `.spv`                               |
 | `docs/`       | BUILDING, PERFORMANCE (budget math), SECURITY (SBOM audits)         |

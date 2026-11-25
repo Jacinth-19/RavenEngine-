@@ -42,7 +42,7 @@ jobs:
           fi
 
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DRAVEN_BUILD_TESTS=ON -DVulkan_INCLUDE_DIR="$PWD/third_party/Vulkan-Headers/include"
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DRAVEN_BUILD_TESTS=ON -DRAVEN_GUI_HEADLESS=ON -DVulkan_INCLUDE_DIR="$PWD/third_party/Vulkan-Headers/include"
 
       - name: Build
         run: |
@@ -68,6 +68,18 @@ jobs:
         run: ctest --test-dir build --output-on-failure
         env:
           RAVEN_REQUIRE_GPU: ${{ steps.vk.outputs.have }}
+
+      - name: Headless editor capture (scene + UI offscreen)
+        if: steps.vk.outputs.have == '1'
+        run: ./build/bin/ravened --headless --frames 3 --capture editor_capture.png
+
+      - name: Upload editor headless capture
+        if: always() && steps.vk.outputs.have == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: editor-headless-capture
+          path: editor_capture.png
+          if-no-files-found: warn
 
       - name: Upload offscreen render from the smoke test
         if: always()

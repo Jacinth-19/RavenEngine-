@@ -86,6 +86,8 @@ else()
     set(RAVEN_VULKAN_FOUND FALSE)
 endif()
 
+option(RAVEN_GUI_HEADLESS "Build the GUI apps against the null-platform GLFW (no X11/Wayland); apps run in an offscreen headless fallback mode" OFF)
+
 # --- GLFW (editor/sandbox windowing) -----------------------------------------------------
 function(raven_find_or_build_glfw)
     find_package(glfw3 3.3 QUIET)
@@ -97,11 +99,27 @@ function(raven_find_or_build_glfw)
     endif()
 
     # On Linux GLFW needs X11 or Wayland development headers. Detect them; without
-    # them the editor targets are skipped (the core library and tests still build).
+    # them either skip the GUI apps (default) or, with RAVEN_GUI_HEADLESS=ON, build
+    # the vendored GLFW with the null windowing platform so the editor/sandbox run
+    # in an offscreen headless mode instead.
     if(UNIX AND NOT APPLE)
         find_package(X11 QUIET)
         if(NOT X11_FOUND)
-            message(STATUS "RavenEngine: X11 dev headers not found — editor/sandbox GUI will be skipped. Install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev (see docs/BUILDING.md)")
+            if(RAVEN_GUI_HEADLESS)
+                message(STATUS "RavenEngine: X11 dev headers not found — building null-platform GLFW (RAVEN_GUI_HEADLESS=ON); editor/sandbox will run headless")
+                set(GLFW_BUILD_X11 OFF CACHE BOOL "" FORCE)
+                set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "" FORCE)
+                set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+                set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+                set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+                set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+                add_subdirectory(${CMAKE_SOURCE_DIR}/third_party/glfw EXCLUDE_FROM_ALL)
+                set(RAVEN_GLFW_FOUND TRUE PARENT_SCOPE)
+                set(RAVEN_GLFW_TARGET_NAME glfw PARENT_SCOPE)
+                set(RAVEN_GUI_HEADLESS_RUNTIME TRUE PARENT_SCOPE)
+                return()
+            endif()
+            message(STATUS "RavenEngine: X11 dev headers not found — editor/sandbox GUI will be skipped (or configure with -DRAVEN_GUI_HEADLESS=ON for headless null-platform GLFW). Install libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev (see docs/BUILDING.md)")
             set(RAVEN_GLFW_FOUND FALSE PARENT_SCOPE)
             return()
         endif()

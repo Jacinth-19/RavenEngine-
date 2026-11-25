@@ -60,6 +60,8 @@ if(RAVEN_GUI_ENABLED)
         ${CMAKE_SOURCE_DIR}/third_party/imguizmo
         ${CMAKE_SOURCE_DIR}/third_party/Vulkan-Headers/include)
     target_link_libraries(raven_imgui PUBLIC raven::vulkan ${RAVEN_GLFW_TARGET_NAME})
+    # GLFW is used for windowing/input only — never for OpenGL (GL dev headers may be absent).
+    target_compile_definitions(raven_imgui PUBLIC GLFW_INCLUDE_NONE)
     if(MSVC)
         target_compile_options(raven_imgui PRIVATE /W0)
     else()
