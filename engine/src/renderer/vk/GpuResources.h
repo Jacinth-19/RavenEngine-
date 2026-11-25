@@ -10,7 +10,7 @@
 
 namespace raven::vk {
 
-struct VulkanContext;
+class VulkanContext;
 
 struct BufferResource {
     VkBuffer buffer = VK_NULL_HANDLE;

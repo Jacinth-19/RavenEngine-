@@ -15,7 +15,7 @@ namespace raven {
 
 class Scene;
 class Camera;
-class Asset;
+struct Asset;
 
 struct RendererConfig {
     std::string applicationName = "RavenEngine";

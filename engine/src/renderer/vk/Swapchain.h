@@ -9,7 +9,7 @@
 
 namespace raven::vk {
 
-struct VulkanContext;
+class VulkanContext;
 
 class Swapchain {
 public:
