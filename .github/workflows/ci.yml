@@ -20,7 +20,11 @@ jobs:
       - name: Install build dependencies + CPU Vulkan (Lavapipe)
         run: |
           set -e
-          # Ubuntu mirrors are occasionally flaky; retry apt-get update and tolerate stale lists.
+          # Port 80 to the Ubuntu mirrors is blocked on some runner pools while 443 works
+          # (chocolatey/brew-style fetches succeed); switch apt to HTTPS first.
+          sudo find /etc/apt -name '*.list' -o -name '*.sources' 2>/dev/null | while read -r f; do
+            sudo sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g; s|http://ports.ubuntu.com|https://ports.ubuntu.com|g' "$f"
+          done
           for attempt in 1 2 3; do
             if sudo apt-get update -o Acquire::Retries=3; then break; fi
             echo "apt-get update attempt $attempt failed; retrying..."
