@@ -111,9 +111,24 @@ jobs:
         id: vk
         shell: pwsh
         run: |
-          $root = "C:\VulkanSDK"
-          $dir = Get-ChildItem $root -Directory | Sort-Object Name -Descending | Select-Object -First 1
-          if (-not $dir) { throw "Vulkan SDK not found under $root" }
+          # The LunarG chocolatey package layout is not stable: prefer the VULKAN_SDK
+          # environment variable (set by the package), then the newest dir under
+          # C:\VulkanSDK, then anywhere under the chocolatey lib folder.
+          $dir = $null
+          if ($env:VULKAN_SDK -and (Test-Path $env:VULKAN_SDK) -and (Test-Path (Join-Path $env:VULKAN_SDK 'Include\vulkan\vulkan.h'))) {
+            $dir = Get-Item $env:VULKAN_SDK
+            Write-Host "Using VULKAN_SDK environment variable: $($dir.FullName)"
+          } else {
+            foreach ($root in @("C:\VulkanSDK", "$env:ChocolateyInstall\lib")) {
+              if (-not (Test-Path $root)) { continue }
+              $dir = Get-ChildItem $root -Directory -Recurse -Filter "vulkan.h" -ErrorAction SilentlyContinue |
+                     Where-Object { $_.FullName -match 'Include[\\/]vulkan[\\/]vulkan\.h$' } |
+                     Sort-Object { $_.FullName } -Descending | Select-Object -First 1 |
+                     ForEach-Object { Get-Item (Split-Path (Split-Path (Split-Path $_.FullName))) }
+              if ($dir) { Write-Host "Found Vulkan SDK headers under: $root"; break }
+            }
+          }
+          if (-not $dir) { throw "Vulkan SDK not found (checked VULKAN_SDK env, C:\VulkanSDK, $env:ChocolateyInstall\lib)" }
           echo "VULKAN_SDK=$($dir.FullName)" >> $env:GITHUB_ENV
 
       - name: Configure
