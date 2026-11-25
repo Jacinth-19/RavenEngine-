@@ -36,7 +36,7 @@ target_link_libraries(raven_core
         raven_lua
         raven_miniaudio)
 
-if(RAVEN_MSVC)
+if(MSVC)
     target_compile_options(raven_core PRIVATE /W3)
     target_compile_definitions(raven_core PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
 else()
@@ -65,7 +65,7 @@ if(RAVEN_VULKAN_FOUND)
         PUBLIC
             raven_core
             raven::vulkan)
-    if(RAVEN_MSVC)
+    if(MSVC)
         target_compile_options(raven_render PRIVATE /W3)
     else()
         target_compile_options(raven_render PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
