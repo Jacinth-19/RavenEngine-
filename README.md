@@ -1,51 +1,112 @@
-# RavenEngine
+<p align="center">
+  <img src="docs/media/ravenengine-logo.png" alt="RavenEngine logo" width="260">
+</p>
 
-RavenEngine is a **low-resource-focused C++20 Vulkan game engine and editor**. It targets
-modest hardware: no bloated abstractions, deterministic engine services, and a renderer that
-keeps frame budgets tight on integrated GPUs.
+<h1 align="center">RavenEngine</h1>
 
-## Highlights
+<p align="center">
+  <em>A low-resource-focused C++20 Vulkan game engine — AAA ambitions on everyday hardware.</em><br>
+  <img alt="CI" src="https://github.com/Jacinth-19/RavenEngine-/actions/workflows/ci.yml/badge.svg">
+  <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg">
+  <img alt="Tests: 37 core + 1 GPU smoke" src="https://img.shields.io/badge/tests-37%2B1%20passing-brightgreen.svg">
+</p>
 
-- **C++20 + Vulkan 1.3** — dynamic rendering, synchronization2, push descriptors; no legacy paths.
-- **Render graph** — passes declare reads/writes; a compiler schedules them, inserts barriers,
-  culls dead passes, and rejects resource forward references at validation time.
-- **ECS** — sparse-set world with stable entity handles, views, and hierarchy support.
-- **Asset pipeline** — UUID-addressed assets with `.meta` sidecar files, import settings
-  (sRGB toggles, mipmaps), and a deterministic asset database (rescan → stable UUIDs).
-- **Scene format** — JSON scenes with components (transform, mesh, camera, light, …), loaded
-  deterministically.
-- **Scripting** — embedded Lua 5.4 with engine bindings.
-- **Audio** — miniaudio-backed mixer with 3D spatialization.
-- **Physics** — lightweight rigid-body/collision core designed for small worlds.
-- **Editor hooks** — ImGui (docking) + ImGuizmo vendored and ready for the editor UI.
+<p align="center"><img src="docs/media/ravenengine-splash.jpg" alt="RavenEngine splash screen artwork" width="720"><br>
+<em>RavenEngine splash artwork (concept). In-splash-screen wiring is pending engine startup UI work.</em></p>
+
+---
+
+## What it is
+
+RavenEngine is a **low-resource-focused C++20 Vulkan game engine and editor** targeting
+integrated GPUs: no bloat, deterministic engine services, and a renderer that keeps frame
+budgets tight.
+
+Design goal, in one line: **a AAA look at 1920×1080 and 2560×1440, 60/120 FPS** — via render
+scale, tiered quality, distance LOD and aggressive budget discipline, not by demanding 4K
+enthusiast hardware.
+
+## Current state — rendered by the engine, not concept art
+
+<table>
+<tr>
+<td align="center"><img src="docs/media/current-state-render.png" width="320" alt="RavenEngine current-state offscreen render"></td>
+<td>
+  <strong>Live render, right now.</strong><br>
+  The sample scene drawn by <code>raven_render</code> on a Vulkan 1.3 device with dynamic
+  rendering + synchronization2: PBR-ish forward pass, one directional shadow (1024²),
+  warm point light, tangent-space normal map.<br><br>
+  Captured locally on <strong>SwiftShader</strong> (Google's CPU Vulkan) — the same path
+  CI runs on Linux with Lavapipe.
+</td>
+</tr>
+</table>
+
+<p align="center"><img src="docs/media/sample-orbit.gif" width="640" alt="Sample scene orbit render, 640x360"><br>
+<em>Orbit of the sample scene — 24 frames captured offscreen by the engine itself (SwiftShader, CPU Vulkan). This is the current look: working forward renderer, real shadows, real assets. It is also genuinely far from the target aesthetic — see below.</em></p>
+
+## Target aesthetic — concept art, not engine output
+
+<p align="center">
+  <img src="docs/media/target-aesthetic-interior.jpg" width="480" alt="Target aesthetic — baroque hall (concept)">
+  <img src="docs/media/target-aesthetic-vista.jpg" width="480" alt="Target aesthetic — gothic vista (concept)">
+</p>
+<p align="center"><em>The look RavenEngine is engineering toward (AI concept art). Achieving it needs the feature roadmap below — it is not what the engine renders today.</em></p>
+
+## What's implemented (and tested)
+
+- **C++20 + Vulkan 1.3** — dynamic rendering, synchronization2; no legacy paths.
+- **Render graph** — passes declare reads/writes; validation rejects forward-referenced resources; barriers solved for you.
+- **ECS** — sparse-set world, stable entity handles, views, hierarchy.
+- **Asset pipeline** — UUID-addressed assets, `.meta` sidecars, import settings (sRGB/mipmaps), deterministic DB; OBJ/texture/scene importers; sample project included.
+- **Scene format** — JSON scenes, deterministic load (`sample/scenes/sample_scene.ravenscene`).
+- **Renderer** — forward PBR-ish shading, PCF shadows, offscreen target, swapchain present, ImGui texture hooks ready, frame stats with per-pass GPU timings.
+- **Camera**, **rigid-body physics**, **Lua 5.4 scripting**, **miniaudio** 3D audio, **ImGui (docking) + ImGuizmo** vendored for the editor.
+- **Quality tiers** (`Quality.h`) — Low/Medium/High/Ultra presets (render scale, shadow size, MSAA, texture/aniso caps, light/particle/voice budgets, physics tick + sleep distance, LOD bias) with a unit-tested LOD projection model.
+- **CI** — Linux (Lavapipe offscreen render + CycloneDX SBOM artifact), Windows (MSVC), macOS (MoltenVK), all green; `v0.1.0` tagged; binary snapshot in `dist/`.
+
+Tests: **37 core suites + 1 Vulkan smoke test** (38 total when a Vulkan device is present, e.g. CI on Lavapipe or locally on SwiftShader/Mesa).
+
+## What's *not* done yet (the honest list)
+
+- `RavenEditor` GUI and `raven-sandbox` are build stubs — no editor is running today.
+- SSAO/SSR/TAA/bloom/CSM/FSR are tier **gates + cost model**, not renderer features.
+- LOD selection is implemented and unit-tested; not yet wired into scene serialization or the draw path.
+- Render-scale upscaling is the engine's supported path (config + resolve contract in docs); no vendored FSR/DLSS.
+- **The engine does not yet look like the reference the project is dreaming about** (path-traced AAA interiors). Closing that gap is the feature roadmap — see `docs/PERFORMANCE.md` for the budget math on how to get there on low-end hardware.
+
+## Headless Vulkan on any machine (SwiftShader)
+
+No GPU? CI proves the render path on Lavapipe; locally you can do the same with SwiftShader —
+see **[docs/BUILDING.md § CPU Vulkan via SwiftShader](docs/BUILDING.md)**.
 
 ## Repository layout
 
-| Path          | Contents                                                            |
+| Path          | Contents                                                             |
 | ------------- | ------------------------------------------------------------------- |
-| `engine/`     | The engine library (`raven_core`) and the Vulkan renderer (`raven_render`) |
-| `editor/`     | Editor application stub (`RavenEditor`) — built when GUI deps exist  |
-| `sandbox/`    | Minimal runnable app (`raven-sandbox`) — built when GUI deps exist   |
-| `sample/`     | Sample game project (meshes, textures, scenes, materials)            |
-| `assets/`     | Engine-provided assets (GLSL sources + compiled `.spv` shaders)      |
+| `engine/`     | `raven_core` (renderer-agnostic) + `raven_render` (Vulkan 1.3)      |
+| `editor/`     | Editor application stub (`RavenEditor`)                             |
+| `sandbox/`    | Minimal runtime stub (`raven-sandbox`)                              |
+| `sample/`     | Sample project: crate mesh, PBR materials, scene, Lua script, audio |
+| `assets/`     | Engine assets: GLSL + compiled `.spv`                               |
+| `docs/`       | BUILDING, PERFORMANCE (budget math), SECURITY (SBOM audits)         |
+| `docs/media/` | Logo, splash, concept art (labeled) — renders above                 |
+| `dist/`       | Linux x86_64 binary snapshot of v0.1.0                              |
 | `tests/`      | Self-contained test framework + suites (`raven_tests`)               |
-| `third_party/`| Vendored, version-pinned dependencies (see `third_party/manifest.json`) |
-| `scripts/`    | Asset generator + CycloneDX SBOM generator                           |
+| `third_party/`| Vendored, version-pinned deps (`manifest.json`)                     |
 
 ## Performance targets
 
-The engine is designed around a hard goal: **a AAA look on low-end hardware — 1920×1080
-and 2560×1440 at 60/120 FPS.** Every expensive feature has a tier-gated light sibling
-(shadows 512–4096², MSAA off–8×, [render-scale upscaling](docs/PERFORMANCE.md), LOD by
-projected pixels, physics sleep distance/tick rate, particle/voice budgets). Quality
-presets live in `engine/include/raven/renderer/Quality.h`; the frame-time model and
-worked verdicts for the four targets are in **[docs/PERFORMANCE.md](docs/PERFORMANCE.md)**
-and can be re-derived with `python3 scripts/perf_budget.py`.
+Quality tiers and a frame-time model for **1080p/1440p @ 60/120 FPS**:
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md) — re-derivable with `python3 scripts/perf_budget.py`.
+
+Headline: Medium tier (720p-class internal upscaling) passes 1080p60 and 1440p60 on
+Iris Xe-class iGPUs; 1440p120 needs ~0.75 render scale or dGPU silicon. Native 1440p120
+on iGPU is not mathematically viable at 7.08 ms — see the doc for the derivation.
 
 ## Building
 
-See **[docs/BUILDING.md](docs/BUILDING.md)** for Linux (Debian/Ubuntu incl. headless CPU-Vulkan
-via Lavapipe), Windows (Vulkan SDK), and macOS (MoltenVK) instructions. Short version:
+See **[docs/BUILDING.md](docs/BUILDING.md)** (Linux/Windows/macOS + CPU-Vulkan SwiftShader).
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DRAVEN_BUILD_TESTS=ON
@@ -56,22 +117,6 @@ cmake --build build -j"$(nproc)"
 The engine configures and builds **without** system Vulkan or windowing libraries —
 `raven_render` and the GUI apps are skipped, and the core test suite still runs.
 
-## CI & supply chain
-
-GitHub Actions (`.github/workflows/ci.yml`) builds on Linux/macOS/Windows. The Linux job runs
-the full suite on **Lavapipe** (CPU Vulkan) including an offscreen render smoke test, and uploads
-a **CycloneDX 1.5 SBOM** (from `third_party/manifest.json`) on every run. See
-[docs/SECURITY.md](docs/SECURITY.md) for vulnerability reporting and the audit procedure.
-
-## Current status
-
-- Tests: **37/37 passing** (`raven_tests`).
-- Renderer gating verified: core suite builds and passes without a system Vulkan loader;
-  `raven_render` + offscreen smoke test compile/run when Vulkan is available (CI).
-- Not yet implemented: the full `RavenEditor` GUI (editor/ directory is a build stub), and
-  `raven-sandbox` runtime. Engine services (ECS, scenes, assets, renderer, camera, …) are
-  implemented, tested, and wired through CMake.
-
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). Vendored third-party licenses: `third_party/manifest.json`.

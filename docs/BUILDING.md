@@ -52,6 +52,53 @@ RAVEN_REQUIRE_GPU=1 ./build/bin/raven_tests
 
 Note: the smoke test renders **offscreen** — no window or display server is required.
 
+## CPU Vulkan via SwiftShader (headless, no GPU, no apt)
+
+Verified locally: the full `raven_tests` suite (38/38, incl. the offscreen render smoke
+test) runs on **[SwiftShader](https://github.com/google/swiftshader)** — Google's CPU
+Vulkan implementation — with **no system Vulkan, no X11, no apt access**. This is also a
+reasonable smoke path for constrained CI machines.
+
+Build (≈10–20 min on 2 cores):
+
+```sh
+# 1) Vulkan loader (tiny)
+git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Loader.git
+git clone --depth 1 --branch v1.4.369 https://github.com/KhronosGroup/Vulkan-Headers.git
+cmake -S Vulkan-Headers -B /tmp/vh-build -DCMAKE_BUILD_TYPE=Release
+cmake --install /tmp/vh-build --prefix /tmp/vh-prefix
+pkg-config --version   # needs a pkg-config stub if your pool lacks XCB; disable WSI instead:
+cmake -S Vulkan-Loader -B /tmp/loader-build -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_TESTS=OFF -DBUILD_WSI_XCB_SUPPORT=OFF -DBUILD_WSI_XLIB_SUPPORT=OFF \
+    -DBUILD_WSI_WAYLAND_SUPPORT=OFF -DVulkanHeaders_DIR=/tmp/vh-prefix/share/cmake/VulkanHeaders
+cmake --build /tmp/loader-build -j
+
+# 2) SwiftShader (Subzero backend is much lighter than LLVM)
+git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/google/swiftshader.git
+cmake -S swiftshader -B /tmp/ss-build -DCMAKE_BUILD_TYPE=Release \
+    -DREACTOR_BACKEND=Subzero -DSWIFTSHADER_BUILD_TESTS=OFF \
+    -DSWIFTSHADER_BUILD_WSI_XCB=OFF -DSWIFTSHADER_BUILD_WSI_WAYLAND=OFF \
+    -DSWIFTSHADER_WARNINGS_AS_ERRORS=OFF
+cmake --build /tmp/ss-build --target vk_swiftshader -j
+
+# 3) Build RavenEngine against the loader + vendored headers, then run on SwiftShader
+cmake -S . -B build-vk -DCMAKE_BUILD_TYPE=Release -DRAVEN_BUILD_TESTS=ON \
+    -DVulkan_INCLUDE_DIR=$PWD/third_party/Vulkan-Headers/include \
+    -DVulkan_LIBRARY=/tmp/loader-build/loader/libvulkan.so
+cmake --build build-vk -j
+LD_LIBRARY_PATH=/tmp/ss-build:/tmp/ss-build/Linux \
+VK_ICD_FILENAMES=/tmp/ss-build/Linux/vk_swiftshader_icd.json \
+RAVEN_REQUIRE_GPU=1 ./build-vk/bin/raven_tests
+```
+
+Expected: `Renderer: initialized on 'SwiftShader Device (Subzero)' (CPU device: yes)` and
+**38 passed, 0 failed** — the offscreen smoke test renders the sample scene to a real
+pixel buffer on the CPU. CI uses Mesa Lavapipe the same way; the SBOM and the smoke
+render are uploaded as workflow artifacts.
+
+Note for artifact re-generation: the committed `docs/media/*.png|gif` were captured with
+exactly this setup (orbit frames assembled into `sample-orbit.gif`).
+
 ## Windows (MSVC)
 
 1. Install [Vulkan SDK](https://vulkan.lunarg.com/) (Chocolatey: `choco install vulkan-sdk -y`).
