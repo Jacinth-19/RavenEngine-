@@ -45,7 +45,17 @@ jobs:
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DRAVEN_BUILD_TESTS=ON -DVulkan_INCLUDE_DIR="$PWD/third_party/Vulkan-Headers/include"
 
       - name: Build
-        run: cmake --build build -j"$(nproc)" 2>&1 | tee build.log
+        run: |
+          cmake --build build -j"$(nproc)" > build.log 2>&1 || {
+            rc=$?
+            echo "===== build.log (tail) ====="
+            tail -n 120 build.log
+            grep -iE 'error|fatal' build.log | tail -40 | while IFS= read -r line; do
+              esc=$(printf '%s' "$line" | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')
+              printf '::error::%s\n' "$esc"
+            done
+            exit $rc
+          }
 
       - name: Upload build log (on failure)
         if: failure()
@@ -100,7 +110,16 @@ jobs:
 
       - name: Build
         shell: pwsh
-        run: cmake --build build --config ${{ env.BUILD_TYPE }} -j 2>&1 | Tee-Object -FilePath build.log; exit $LASTEXITCODE
+        run: |
+          cmake --build build --config ${{ env.BUILD_TYPE }} -j *> build.log
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content build.log | Write-Host
+            Get-Content build.log | Select-String -Pattern 'error|fatal' | Select-Object -Last 40 | ForEach-Object {
+              $m = $_.Line -replace '%','%25' -replace "`r",'%0D' -replace "`n",'%0A'
+              Write-Host "::error::$m"
+            }
+            exit $LASTEXITCODE
+          }
 
       - name: Upload build log (on failure)
         if: failure()
@@ -125,7 +144,16 @@ jobs:
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DRAVEN_BUILD_TESTS=ON
 
       - name: Build
-        run: cmake --build build -j"$(sysctl -n hw.ncpu)" 2>&1 | tee build.log
+        run: |
+          cmake --build build -j"$(sysctl -n hw.ncpu)" > build.log 2>&1 || {
+            rc=$?
+            tail -n 120 build.log
+            grep -iE 'error|fatal' build.log | tail -40 | while IFS= read -r line; do
+              esc=$(printf '%s' "$line" | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')
+              printf '::error::%s\n' "$esc"
+            done
+            exit $rc
+          }
 
       - name: Upload build log (on failure)
         if: failure()
