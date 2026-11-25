@@ -45,6 +45,14 @@ struct SceneFixture {
         ScriptComponent sc;
         sc.scriptPath = "assets/scripts/spin.lua";
         scene.World().AddComponent<ScriptComponent>(child, sc);
+
+        LodComponent lod;
+        lod.levels = {UUID::Parse("3f6b9c2a-1a7e-4c1d-9b2f-8d5a6e7f1023").value_or(UUID::Nil()),
+                      UUID::Parse("9c2a1a7e-4c1d-3f6b-8d5a-6e7f10239b2f").value_or(UUID::Nil())};
+        lod.screenHeights = {0.5f, 0.15f};
+        lod.boundingRadius = 2.5f;
+        lod.lodBias = 1.25f;
+        scene.World().AddComponent<LodComponent>(root, lod);
     }
 };
 } // namespace
@@ -80,6 +88,17 @@ RAVEN_TEST("scene: save/load round-trip preserves components and hierarchy") {
     const auto& sc = loaded.World().GetComponent<ScriptComponent>(*childLoaded);
     CHECK(sc.scriptPath == "assets/scripts/spin.lua");
     CHECK(sc.enabled);
+
+    REQUIRE(loaded.World().HasComponent<LodComponent>(*rootLoaded));
+    const auto& lod = loaded.World().GetComponent<LodComponent>(*rootLoaded);
+    REQUIRE(lod.levels.size() == 2u);
+    REQUIRE(lod.screenHeights.size() == 2u);
+    CHECK(lod.levels[0] == UUID::Parse("3f6b9c2a-1a7e-4c1d-9b2f-8d5a6e7f1023").value_or(UUID::Nil()));
+    CHECK(lod.levels[1] == UUID::Parse("9c2a1a7e-4c1d-3f6b-8d5a-6e7f10239b2f").value_or(UUID::Nil()));
+    CHECK(Near(lod.screenHeights[0], 0.5f));
+    CHECK(Near(lod.screenHeights[1], 0.15f));
+    CHECK(Near(lod.boundingRadius, 2.5f));
+    CHECK(Near(lod.lodBias, 1.25f));
 }
 
 RAVEN_TEST("scene: world matrix composes parent and child transforms") {

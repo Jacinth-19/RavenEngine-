@@ -28,6 +28,7 @@ layout(location = 2) in vec2 vUV;
 layout(location = 3) in vec4 vLightSpacePos;
 
 layout(location = 0) out vec4 outColor;
+layout(location = 1) out vec4 outMaterial;  // r = metallic, g = roughness, b = emissive (normalized), a = 1
 
 float SampleShadow() {
     if (push.mrParams.w < 0.5) return 1.0;  // shadows disabled for this draw
@@ -116,4 +117,5 @@ void main() {
     color = color / (color + vec3(0.6)) * 1.35;
 
     outColor = vec4(color, albedoSample.a);
+    outMaterial = vec4(metallic, roughness, clamp(push.mrParams.z * 0.25, 0.0, 1.0), 1.0);
 }

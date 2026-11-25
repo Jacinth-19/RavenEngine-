@@ -107,5 +107,5 @@ RAVEN_TEST("quality: SelectLod picks finer LOD for nearer objects") {
 RAVEN_TEST("quality: RendererConfig defaults keep the safe Medium tier") {
     RendererConfig cfg;
     CHECK(cfg.qualityTier == QualityTier::Medium);
-    CHECK(cfg.resolutionScale == 1.0f);
+    CHECK(cfg.resolutionScale == 0.0f);  // 0 = auto (tier preset); explicit value overrides
 }

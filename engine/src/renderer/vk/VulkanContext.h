@@ -52,6 +52,11 @@ public:
 
     VkFormat FindDepthFormat() const;
     VkSampleCountFlagBits MaxSampleCount() const { return m_MaxSampleCount; }
+    VkResolveModeFlags SupportedDepthResolveModes() const { return m_SupportedDepthResolveModes; }
+    bool SupportsDepthResolve() const {
+        // Depth resolves require VK_KHR_depth_stencil_resolve (no feature bits, just properties).
+        return m_HasDepthStencilResolveExt && (m_SupportedDepthResolveModes & VK_RESOLVE_MODE_SAMPLE_ZERO_BIT);
+    }
 
     VkCommandPool CreateCommandPool(uint32_t queueFamily, VkCommandPoolCreateFlags flags = 0) const;
     VkCommandBuffer AllocateSecondaryCommandBuffer(VkCommandPool pool) const;
@@ -92,6 +97,8 @@ private:
     bool m_CpuDevice = false;
     float m_TimestampPeriod = 0.0f;
     VkSampleCountFlagBits m_MaxSampleCount = VK_SAMPLE_COUNT_1_BIT;
+    bool m_HasDepthStencilResolveExt = false;
+    VkResolveModeFlags m_SupportedDepthResolveModes = 0;
     std::string m_DeviceName;
     uint64_t m_DeviceLocalBytes = 0;
 };

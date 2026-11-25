@@ -91,6 +91,8 @@ ecs::Entity Scene::DuplicateEntity(ecs::Entity entity) {
     }
     if (m_World.HasComponent<MeshRendererComponent>(entity))
         m_World.AddComponent<MeshRendererComponent>(copy, m_World.GetComponent<MeshRendererComponent>(entity));
+    if (m_World.HasComponent<LodComponent>(entity))
+        m_World.AddComponent<LodComponent>(copy, m_World.GetComponent<LodComponent>(entity));
     if (m_World.HasComponent<DirectionalLightComponent>(entity))
         m_World.AddComponent<DirectionalLightComponent>(copy, m_World.GetComponent<DirectionalLightComponent>(entity));
     if (m_World.HasComponent<PointLightComponent>(entity))
@@ -257,6 +259,15 @@ std::string Scene::SerializeToString() const {
                                           {"castShadow", m.castShadow},
                                           {"visible", m.visible}};
         }
+        if (m_World.HasComponent<LodComponent>(e)) {
+            const auto& lod = m_World.GetComponent<LodComponent>(e);
+            nlohmann::json levels = nlohmann::json::array();
+            for (const UUID& u : lod.levels) levels.push_back(UUIDToJson(u));
+            components["lod"] = {{"levels", std::move(levels)},
+                                 {"screenHeights", lod.screenHeights},
+                                 {"boundingRadius", lod.boundingRadius},
+                                 {"lodBias", lod.lodBias}};
+        }
         if (m_World.HasComponent<DirectionalLightComponent>(e)) {
             const auto& l = m_World.GetComponent<DirectionalLightComponent>(e);
             components["directionalLight"] = {{"direction", Vec3ToJson(l.direction)},
@@ -366,6 +377,17 @@ bool Scene::LoadFromString(const std::string& text, std::string* error) {
             mc.castShadow = m.value("castShadow", true);
             mc.visible = m.value("visible", true);
             m_World.AddComponent<MeshRendererComponent>(e, mc);
+        }
+        if (components.contains("lod")) {
+            const auto& l = components["lod"];
+            LodComponent lc;
+            if (l.contains("levels") && l["levels"].is_array()) {
+                for (const auto& u : l["levels"]) lc.levels.push_back(JsonToUUID(u));
+            }
+            lc.screenHeights = l.value("screenHeights", std::vector<float>{});
+            lc.boundingRadius = l.value("boundingRadius", 1.0f);
+            lc.lodBias = l.value("lodBias", 0.0f);
+            m_World.AddComponent<LodComponent>(e, lc);
         }
         if (components.contains("directionalLight")) {
             const auto& l = components["directionalLight"];

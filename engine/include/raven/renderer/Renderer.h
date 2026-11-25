@@ -26,7 +26,10 @@ struct RendererConfig {
     bool enablePortabilityEnumeration = false;  // macOS/iOS (MoltenVK)
     std::vector<const char*> requiredInstanceExtensions;  // from the windowing layer (glfwGetRequiredInstanceExtensions)
     QualityTier qualityTier = QualityTier::Medium;        // picks shadows/MSAA/texture budget (see Quality.h)
-    float resolutionScale = 1.0f;          // internal render scale in (0.5, 1.0]; <1 renders low-res & resolves up
+    // Internal render scale in (0.5, 1.0]: the scene is rendered at scale * target
+    // extent and expanded to the target with a Catmull-Rom resolve.
+    // 0 = auto (use the quality tier's preset: Low 0.5, Medium 0.67, High/Ultra 1.0).
+    float resolutionScale = 0.0f;
 };
 
 struct FrameParams {
@@ -47,6 +50,7 @@ struct FrameStats {
     uint32_t triangles = 0;
     uint32_t meshesDrawn = 0;
     uint32_t culledPasses = 0;
+    uint32_t lodCulled = 0;          // entities rejected by the LOD distance cutoff this frame
     std::string gpuName;
     uint64_t vramBytes = 0;
     bool dynamicRendering = true;

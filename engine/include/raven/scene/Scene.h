@@ -18,7 +18,9 @@ namespace raven {
 
 class Scene {
 public:
-    static constexpr int kSchemaVersion = 1;
+    // Schema history: 1 = initial; 2 adds the "lod" component (LOD chain) on entities.
+    // Readers at v1 ignore the key; writers always emit the current version.
+    static constexpr int kSchemaVersion = 2;
 
     Scene() = default;
     explicit Scene(std::string name) : m_Name(std::move(name)) {}

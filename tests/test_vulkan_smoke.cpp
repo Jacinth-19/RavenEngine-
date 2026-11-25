@@ -132,3 +132,80 @@ RAVEN_TEST("vulkan: offscreen render of the sample scene produces lit pixels") {
 
     renderer.Shutdown();
 }
+
+RAVEN_TEST("vulkan: high tier (SSAO+bloom+TAA+MSAA) post chain renders lit pixels") {
+#ifdef _WIN32
+    _putenv_s("RAVEN_ENGINE_ASSETS_DIR", RAVEN_ENGINE_ASSETS_DIR);
+#else
+    setenv("RAVEN_ENGINE_ASSETS_DIR", RAVEN_ENGINE_ASSETS_DIR, /*overwrite*/ 0);
+#endif
+
+    const fs::path project = CreateTempProjectCopy();
+
+    AssetManager& mgr = AssetManager::Instance();
+    std::string error;
+    REQUIRE(mgr.Initialize(project / "assets", project / "Library", &error));
+
+    Renderer renderer;
+    RendererConfig config;
+    config.applicationName = "RavenEngine_TestHigh";
+    config.enableValidation = false;
+    config.allowCpuDeviceFallback = true;
+    config.qualityTier = QualityTier::High;
+    config.resolutionScale = 1.0f;   // native: post chain without the upscaler in the way
+#if defined(__APPLE__)
+    config.enablePortabilityEnumeration = true;
+#endif
+    if (!renderer.Initialize(config, &error)) {
+        const char* require = std::getenv("RAVEN_REQUIRE_GPU");
+        if (require && require[0] == '1') {
+            FAIL("RAVEN_REQUIRE_GPU=1 but Vulkan device creation failed: " + (error.empty() ? std::string("unknown error") : error));
+        }
+        std::fprintf(stderr, "[ SKIP ] no Vulkan device available — high-tier smoke test skipped (%s)\n", error.c_str());
+        return;
+    }
+    renderer.RegisterAssetUploadHandler();
+    REQUIRE(renderer.CreateOffscreenTarget(320, 240, &error));
+
+    Scene scene("Sample");
+    REQUIRE(scene.Load(project / "scenes" / "sample_scene.ravenscene", &error));
+
+    Camera camera;
+    camera.position = {4.2f, 3.1f, 6.3f};
+    camera.LookAt(camera.position, glm::vec3(0.0f, 1.0f, 0.0f));
+    camera.fovDegrees = 55.0f;
+
+    FrameParams params;
+    params.drawGrid = false;
+    // Two frames: the first has no TAA history; the second exercises the full path.
+    REQUIRE(renderer.RenderOffscreen(scene, camera, params));
+    REQUIRE(renderer.RenderOffscreen(scene, camera, params));
+    const FrameStats stats = renderer.GetFrameStats();
+
+    const fs::path pngPath = fs::temp_directory_path() / "raven_test_high_tier.png";
+    REQUIRE(renderer.SaveOffscreenToPng(scene, camera, params, pngPath, &error));
+    CHECK(fs::exists(pngPath));
+
+    int width = 0, height = 0, channels = 0;
+    unsigned char* pixels = stbi_load(pngPath.string().c_str(), &width, &height, &channels, 4);
+    REQUIRE(pixels != nullptr);
+    int litPixels = 0;
+    for (int i = 0; i < width * height; ++i) {
+        const unsigned char r = pixels[i * 4 + 0], g = pixels[i * 4 + 1], b = pixels[i * 4 + 2];
+        if (int(r) + int(g) + int(b) > 90) ++litPixels;
+    }
+    stbi_image_free(pixels);
+    CHECK(static_cast<float>(litPixels) / static_cast<float>(width * height) > 0.05f);
+
+    // The post chain actually ran and reported timings (SwiftShader or a real GPU).
+    bool sawForward = false, sawComposite = false;
+    for (const auto& p : stats.passTimes) {
+        if (p.name == "forward") sawForward = true;
+        if (p.name == "composite") sawComposite = true;
+    }
+    CHECK(sawForward);
+    CHECK(sawComposite);
+    CHECK(stats.drawCalls >= 2u);
+
+    renderer.Shutdown();
+}

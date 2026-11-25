@@ -185,6 +185,12 @@ bool VulkanContext::PickPhysicalDevice(const VulkanContextConfig& config, std::s
     for (VkPhysicalDevice device : devices) {
         VkPhysicalDeviceProperties props;
         vkGetPhysicalDeviceProperties(device, &props);
+        VkPhysicalDeviceVulkan12Properties props12{};
+        props12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES;
+        VkPhysicalDeviceProperties2 props2{};
+        props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        props2.pNext = &props12;
+        vkGetPhysicalDeviceProperties2(device, &props2);
 
         // Queue families: must have a graphics-capable queue.
         uint32_t queueCount = 0;
@@ -211,9 +217,11 @@ bool VulkanContext::PickPhysicalDevice(const VulkanContextConfig& config, std::s
         vkEnumerateDeviceExtensionProperties(device, nullptr, &extCount, extensions.data());
         bool hasSwapchain = false;
         bool hasPortabilitySubset = false;
+        bool hasDepthStencilResolve = false;
         for (const auto& ext : extensions) {
             if (std::strcmp(ext.extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME) == 0) hasSwapchain = true;
             if (std::strcmp(ext.extensionName, "VK_KHR_portability_subset") == 0) hasPortabilitySubset = true;
+            if (std::strcmp(ext.extensionName, VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME) == 0) hasDepthStencilResolve = true;
         }
         if (config.requireSwapchain && !hasSwapchain) continue;
 
@@ -255,6 +263,8 @@ bool VulkanContext::PickPhysicalDevice(const VulkanContextConfig& config, std::s
             m_Synchronization2 = features13.synchronization2 == VK_TRUE;
             m_TimelineSemaphores = features12.timelineSemaphore == VK_TRUE;
             m_TimestampPeriod = props.limits.timestampPeriod;
+            m_HasDepthStencilResolveExt = hasDepthStencilResolve;
+            m_SupportedDepthResolveModes = props12.supportedDepthResolveModes;
             m_DeviceName = props.deviceName;
             (void)features2;
         }
@@ -313,6 +323,8 @@ bool VulkanContext::CreateDevice(std::string* error) {
     if (hasExt(VK_KHR_SWAPCHAIN_EXTENSION_NAME)) deviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
     // MoltenVK on macOS/iOS requires this subset extension.
     if (hasExt("VK_KHR_portability_subset")) deviceExtensions.push_back("VK_KHR_portability_subset");
+    // Depth attachment resolves (no feature bits; required to use resolveMode on depth attachments).
+    if (hasExt(VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME)) deviceExtensions.push_back(VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME);
 
     VkPhysicalDeviceVulkan13Features features13{};
     features13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;

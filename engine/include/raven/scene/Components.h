@@ -25,7 +25,9 @@ struct TransformComponent {
 
 // Distance-based LOD chain for the mesh on this entity. levels[0] should equal the
 // MeshRendererComponent mesh (LOD0); empty chain means "no LOD, draw LOD0 always".
-// Not serialized yet (schema addition pending); constructed at import/spawn time.
+// Serialized as scene component "lod" (schema v2) and consumed by the renderer
+// (projected screen height vs the tier LOD bias/thresholds picks the level; entities
+// beyond the tier's lodMaxDistance are not drawn at all).
 struct LodComponent {
     std::vector<UUID> levels;         // mesh UUIDs, LOD0..LODn
     std::vector<float> screenHeights; // switch LOD k -> k+1 below screenHeights[k] px
