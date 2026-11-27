@@ -35,6 +35,7 @@ UUID JsonToUUID(const nlohmann::json& j) {
 ecs::Entity Scene::CreateEntityInternal(const std::string& name, bool markDirty) {
     ecs::Entity e = m_World.CreateEntity();
     m_World.AddComponent<NameComponent>(e, NameComponent{name});
+    m_World.AddComponent<UuidComponent>(e);
     m_World.AddComponent<TransformComponent>(e);
     if (markDirty) m_Dirty = true;
     return e;
@@ -220,6 +221,15 @@ std::optional<ecs::Entity> Scene::FindByName(const std::string& name) const {
     return std::nullopt;
 }
 
+std::optional<ecs::Entity> Scene::FindByUUID(const UUID& id) const {
+    if (id.IsNil()) return std::nullopt;
+    for (ecs::Entity e : m_World.Entities()) {
+        if (m_World.HasComponent<UuidComponent>(e) && m_World.GetComponent<UuidComponent>(e).id == id)
+            return e;
+    }
+    return std::nullopt;
+}
+
 // ---------------------------------------------------------------- serialize
 
 std::string Scene::SerializeToString() const {
@@ -240,6 +250,9 @@ std::string Scene::SerializeToString() const {
 
         if (m_World.HasComponent<NameComponent>(e)) {
             components["name"] = {{"name", m_World.GetComponent<NameComponent>(e).name}};
+        }
+        if (m_World.HasComponent<UuidComponent>(e)) {
+            components["uuid"] = {{"id", UUIDToJson(m_World.GetComponent<UuidComponent>(e).id)}};
         }
         if (m_World.HasComponent<TransformComponent>(e)) {
             const auto& t = m_World.GetComponent<TransformComponent>(e);
@@ -356,6 +369,12 @@ bool Scene::LoadFromString(const std::string& text, std::string* error) {
         const auto& components = root["entities"][i].value("components", nlohmann::json::object());
         ecs::Entity e = fileMap[i];
 
+        if (components.contains("uuid")) {
+            const UUID parsed = JsonToUUID(components["uuid"].value("id", nlohmann::json()));
+            if (!parsed.IsNil()) m_World.AddComponent<UuidComponent>(e, UuidComponent(parsed));
+        }
+        if (!m_World.HasComponent<UuidComponent>(e))
+            m_World.AddComponent<UuidComponent>(e);  // pre-v3 scenes: mint fresh on load
         if (components.contains("transform")) {
             const auto& t = components["transform"];
             auto& transform = m_World.GetComponent<TransformComponent>(e);

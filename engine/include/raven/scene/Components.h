@@ -15,6 +15,16 @@ struct NameComponent {
     std::string name;
 };
 
+// Stable 128-bit entity identity (scene schema v3+). Minted at creation, persisted with
+// the scene, never reused after destroy. The editor keys selection, undo/redo UUID
+// resolution and prefab spawn mappings off this — never off the runtime Entity handle.
+struct UuidComponent {
+    UUID id;
+
+    UuidComponent() : id(UUID::Generate()) {}
+    explicit UuidComponent(const UUID& uuid) : id(uuid) {}
+};
+
 struct TransformComponent {
     glm::vec3 position{0.0f};
     glm::vec3 rotation{0.0f};   // Euler angles, radians, XYZ order
