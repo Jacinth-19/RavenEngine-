@@ -1,0 +1,10 @@
+{
+  "uuid": "b52d8c1a-6f3e-4a9c-c4e7-3d9a2b1f02c8",
+  "assetType": "texture",
+  "relativePath": "textures/crate_normal.png",
+  "importVersion": 1,
+  "importSettings": {
+    "srgb": false,
+    "generateMipmaps": true
+  }
+}

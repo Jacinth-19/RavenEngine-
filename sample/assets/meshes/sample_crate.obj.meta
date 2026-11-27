@@ -1,0 +1,9 @@
+{
+  "uuid": "3f6b9c2a-1a7e-4c1d-9b2f-8d5a6e7f1023",
+  "assetType": "mesh",
+  "relativePath": "meshes/sample_crate.obj",
+  "importVersion": 1,
+  "importSettings": {
+    "flipUVs": true
+  }
+}

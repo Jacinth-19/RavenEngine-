@@ -1,0 +1,10 @@
+{
+  "uuid": "a41c7b09-5e2d-4b8f-b3d6-2c8f1a0e91b7",
+  "assetType": "texture",
+  "relativePath": "textures/crate_albedo.png",
+  "importVersion": 1,
+  "importSettings": {
+    "srgb": true,
+    "generateMipmaps": true
+  }
+}

@@ -1,0 +1,228 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, "arena/**"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  linux:
+    name: Linux (Ubuntu, Lavapipe) — build + tests + SBOM
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies (best effort)
+        continue-on-error: true
+        run: |
+          # The runner pool cannot reach the Ubuntu mirrors over apt (exit 100 within seconds,
+          # while HTTPS fetches such as chocolatey/brew succeed). Switch apt to HTTPS anyway —
+          # it works on pools that allow it — then fall back to whatever the image already has.
+          sudo find /etc/apt \( -name '*.list' -o -name '*.sources' \) 2>/dev/null | while read -r f; do
+            sudo sed -i 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g; s|http://security.ubuntu.com|https://security.ubuntu.com|g; s|http://ports.ubuntu.com|https://ports.ubuntu.com|g' "$f" || true
+          done
+          for attempt in 1 2 3; do sudo apt-get update -o Acquire::Retries=2 && break; sleep 3; done
+          sudo apt-get install -y --no-install-recommends -o Acquire::Retries=2 \
+            libvulkan-dev mesa-vulkan-drivers || true
+          ldconfig -p | grep -i vulkan || true
+          ls /usr/share/vulkan/icd.d/ 2>/dev/null || true
+
+      - name: Detect Vulkan loader + ICD
+        id: vk
+        run: |
+          if ldconfig -p | grep -qE 'libvulkan\.so' && ls /usr/share/vulkan/icd.d/*.json >/dev/null 2>&1; then
+            echo "have=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "have=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DRAVEN_BUILD_TESTS=ON -DRAVEN_GUI_HEADLESS=ON -DVulkan_INCLUDE_DIR="$PWD/third_party/Vulkan-Headers/include"
+
+      - name: Build
+        run: |
+          cmake --build build -j"$(nproc)" > build.log 2>&1 || {
+            rc=$?
+            echo "===== build.log (tail) ====="
+            tail -n 120 build.log
+            grep -iE 'error|fatal' build.log | tail -40 | while IFS= read -r line; do
+              esc=$(printf '%s' "$line" | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')
+              printf '::error::%s\n' "$esc"
+            done
+            exit $rc
+          }
+
+      - name: Upload build log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-linux
+          path: build.log
+
+      - name: Test (GPU smoke test requires a CPU Vulkan device when one is present)
+        run: ctest --test-dir build --output-on-failure
+        env:
+          RAVEN_REQUIRE_GPU: ${{ steps.vk.outputs.have }}
+
+      - name: Headless editor capture (scene + UI offscreen)
+        if: steps.vk.outputs.have == '1'
+        run: ./build/bin/ravened --headless --frames 3 --capture editor_capture.png
+
+      - name: Upload editor headless capture
+        if: always() && steps.vk.outputs.have == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: editor-headless-capture
+          path: editor_capture.png
+          if-no-files-found: warn
+
+      - name: Upload offscreen render from the smoke test
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: offscreen-smoke-render
+          path: /tmp/raven_test_offscreen.png
+          if-no-files-found: warn
+
+      - name: Generate SBOM (CycloneDX 1.5)
+        run: python3 scripts/generate_sbom.py --output build/sbom.cdx.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: build/sbom.cdx.json
+
+  windows:
+    name: Windows (MSVC) — build + core tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Vulkan SDK (LunarG, via Chocolatey — best effort)
+        continue-on-error: true
+        run: choco install vulkan-sdk -y --no-progress
+
+      - name: Locate Vulkan (best effort; Windows builds degrade gracefully to core-only)
+        shell: pwsh
+        run: |
+          # windows-latest no longer reliably provides a LunarG SDK (preinstall dropped
+          # and the chocolatey package may no-op), so search every plausible root and
+          # degrade to a core-only build when no import library can be found. A
+          # ::warning:: annotation is emitted in that case — the Linux/macOS legs
+          # always build the Vulkan renderer.
+          $candidates = @(
+            $env:VULKAN_SDK,
+            "C:\VulkanSDK",
+            "C:\Program Files\LunarG",
+            "C:\Program Files (x86)\LunarG",
+            "C:\Program Files\VulkanSDK",
+            "C:\ProgramData\chocolatey\lib",
+            "$env:ChocolateyInstall\lib",
+            "C:\Program Files (x86)\Windows Kits"
+          ) | Where-Object { $_ }
+          $include = $null; $lib = $null
+          foreach ($root in $candidates) {
+            if (-not (Test-Path $root)) { continue }
+            Write-Host "Scanning $root ..."
+            $hdr = Get-ChildItem $root -Recurse -Filter "vulkan.h" -ErrorAction SilentlyContinue |
+                   Where-Object { $_.FullName -match 'Include[\\/]vulkan[\\/]vulkan\.h$' } | Select-Object -First 1
+            $vklib = Get-ChildItem $root -Recurse -Filter "vulkan-1.lib" -ErrorAction SilentlyContinue |
+                     Sort-Object { $_.FullName } -Descending | Select-Object -First 1
+            if ($hdr) { $include = Split-Path (Split-Path (Split-Path $hdr.FullName)) }
+            if ($vklib) { $lib = $vklib.FullName }
+            if ($lib) { Write-Host "Found vulkan-1.lib: $lib (include: $include)"; break }
+          }
+          if (-not $lib) { $include = $null }   # no loader to link -> core-only build
+          if (-not $include) { $include = "$env:GITHUB_WORKSPACE/third_party/Vulkan-Headers/include" }
+          if ($lib) {
+            echo "VULKAN_INCLUDE=$include" >> $env:GITHUB_ENV
+            echo "VULKAN_LIB=$lib" >> $env:GITHUB_ENV
+          } else {
+            Write-Host "::warning::No Vulkan import library found on this runner — building raven_core + raven_tests only (GPU renderer skipped)."
+            echo "VULKAN_CORE_ONLY=1" >> $env:GITHUB_ENV
+          }
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          if ($env:VULKAN_CORE_ONLY) {
+            cmake -S . -B build -A x64 -DRAVEN_BUILD_TESTS=ON
+          } else {
+            cmake -S . -B build -A x64 -DRAVEN_BUILD_TESTS=ON -DVulkan_INCLUDE_DIR="$env:VULKAN_INCLUDE" -DVulkan_LIBRARY="$env:VULKAN_LIB"
+          }
+
+      - name: Build
+        shell: pwsh
+        run: |
+          cmake --build build --config ${{ env.BUILD_TYPE }} -j *> build.log
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content build.log | Write-Host
+            Get-Content build.log | Select-String -Pattern 'error|fatal' | Select-Object -Last 40 | ForEach-Object {
+              $m = $_.Line -replace '%','%25' -replace "`r",'%0D' -replace "`n",'%0A'
+              Write-Host "::error::$m"
+            }
+            exit $LASTEXITCODE
+          }
+
+      - name: Upload build log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-windows
+          path: build.log
+
+      - name: Test (GPU smoke test self-skips without a CPU device; core suite runs fully)
+        run: ctest --test-dir build -C ${{ env.BUILD_TYPE }} --output-on-failure
+
+  macos:
+    name: macOS (MoltenVK) — build + core tests
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools + Vulkan (MoltenVK)
+        run: brew install cmake ninja vulkan-loader molten-vk glfw
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DRAVEN_BUILD_TESTS=ON
+
+      - name: Build
+        run: |
+          cmake --build build -j"$(sysctl -n hw.ncpu)" > build.log 2>&1 || {
+            rc=$?
+            tail -n 120 build.log
+            grep -iE 'error|fatal' build.log | tail -40 | while IFS= read -r line; do
+              esc=$(printf '%s' "$line" | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')
+              printf '::error::%s\n' "$esc"
+            done
+            exit $rc
+          }
+
+      - name: Upload build log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-macos
+          path: build.log
+
+      - name: Test (offscreen render via MoltenVK when a Metal device is present; otherwise skipped)
+        run: ctest --test-dir build --output-on-failure
+
+  engine-check:
+    name: Build summary + file inventory
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Repository sanity
+        run: |
+          test -f LICENSE
+          test -f README.md
+          test -f third_party/manifest.json
+          test -f assets/engine/shaders/forward.frag.spv
+          echo "Repository layout OK"
