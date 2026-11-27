@@ -15,6 +15,7 @@
 #include "imgui_internal.h"
 #include "imgui_impl_vulkan.h"
 #include "ImGuizmo.h"
+#include "phosphor_icons.h"
 
 #include "raven/core/Logger.h"
 #include "raven/assets/AssetManager.h"
@@ -242,12 +243,12 @@ void EditorApp::DrawMenuBar() {
     if (!ImGui::BeginMainMenuBar()) return;
 
     if (ImGui::BeginMenu("File")) {
-        if (ImGui::MenuItem("Save Scene\tCtrl+S")) {
+        if (ImGui::MenuItem(ICON_PH_FLOPPY_DISK "\tSave Scene\tCtrl+S")) {
             std::string saveError;
             if (m_Scene.Save(&saveError)) RAVEN_LOG_INFO("Editor: saved scene %s", m_ScenePath.string().c_str());
             else RAVEN_LOG_ERROR("Editor: save failed: %s", saveError.c_str());
         }
-        if (ImGui::MenuItem("Reload Scene")) {
+        if (ImGui::MenuItem(ICON_PH_ARROWS_CLOCKWISE "\tReload Scene")) {
             if (m_Scene.IsDirty()) {
                 std::string saveError;
                 if (m_Scene.Save(&saveError)) RAVEN_LOG_INFO("Editor: auto-saved before reload");
@@ -261,32 +262,32 @@ void EditorApp::DrawMenuBar() {
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Entity")) {
-        if (ImGui::MenuItem("Create Empty Entity")) {
+        if (ImGui::MenuItem(ICON_PH_PLUS "\tCreate Empty Entity")) {
             m_Selected = m_Scene.CreateEntity("Entity");
             m_Scene.MarkDirty();
         }
         const bool hasSel = m_Scene.World().IsAlive(m_Selected);
-        if (ImGui::MenuItem("Duplicate Selected\tCtrl+D", nullptr, false, hasSel)) {
+        if (ImGui::MenuItem(ICON_PH_COPY "\tDuplicate Selected\tCtrl+D", nullptr, false, hasSel)) {
             m_Selected = m_Scene.DuplicateEntity(m_Selected);
             m_Scene.MarkDirty();
         }
-        if (ImGui::MenuItem("Delete Selected\tDel", nullptr, false, hasSel)) {
+        if (ImGui::MenuItem(ICON_PH_TRASH "\tDelete Selected\tDel", nullptr, false, hasSel)) {
             m_DeleteList.push_back(m_Selected);
             m_Selected = ecs::NullEntity;
         }
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
-        ImGui::MenuItem("Hierarchy", nullptr, &m_ShowHierarchy);
-        ImGui::MenuItem("Inspector", nullptr, &m_ShowInspector);
-        ImGui::MenuItem("Assets", nullptr, &m_ShowAssets);
-        ImGui::MenuItem("Profiler", nullptr, &m_ShowProfiler);
-        ImGui::MenuItem("Console", nullptr, &m_ShowConsole);
-        ImGui::MenuItem("Grid", nullptr, &m_ShowGrid);
+        ImGui::MenuItem(ICON_PH_LIST "\tHierarchy", nullptr, &m_ShowHierarchy);
+        ImGui::MenuItem(ICON_PH_SLIDERS_HORIZONTAL "\tInspector", nullptr, &m_ShowInspector);
+        ImGui::MenuItem(ICON_PH_IMAGE "\tAssets", nullptr, &m_ShowAssets);
+        ImGui::MenuItem(ICON_PH_CHART_LINE "\tProfiler", nullptr, &m_ShowProfiler);
+        ImGui::MenuItem(ICON_PH_TERMINAL "\tConsole", nullptr, &m_ShowConsole);
+        ImGui::MenuItem(ICON_PH_GRID_FOUR "\tGrid", nullptr, &m_ShowGrid);
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Help")) {
-        if (ImGui::MenuItem("About RavenEditor")) m_AboutOpen = true;
+        if (ImGui::MenuItem(ICON_PH_INFO "\tAbout RavenEditor")) m_AboutOpen = true;
         ImGui::EndMenu();
     }
 
@@ -303,14 +304,16 @@ void EditorApp::DrawAboutModal() {
     if (!ImGui::BeginPopupModal("About RavenEditor", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         return;
     }
-    ImGui::Text("RavenEditor %s", RAVEN_VERSION);
+    ImGui::Text(ICON_PH_ROCKET "  RavenEditor %s", RAVEN_VERSION);
     ImGui::TextDisabled("RavenEngine — low-resource C++20 Vulkan game engine");
     ImGui::Separator();
     ImGui::Text("GPU: %s", m_Renderer.GpuName().c_str());
     ImGui::Text("Scene: %s%s", m_ScenePath.empty() ? "(none)" : m_ScenePath.filename().string().c_str(),
                 m_Scene.IsDirty() ? " *" : "");
     ImGui::Separator();
-    if (ImGui::Button("Close", ImVec2(120, 0))) { m_AboutOpen = false; ImGui::CloseCurrentPopup(); }
+    ImGui::TextDisabled(ICON_PH_GITHUB_LOGO "  github.com/Jacinth-19/RavenEngine-");
+    ImGui::Separator();
+    if (ImGui::Button(ICON_PH_X " Close", ImVec2(120, 0))) { m_AboutOpen = false; ImGui::CloseCurrentPopup(); }
     ImGui::EndPopup();
 }
 
@@ -322,19 +325,29 @@ void EditorApp::DrawViewportPanel() {
     // Thin docked strip at the top of the central hole: gizmo ops + toggles.
     ImGui::Begin("Viewport Tools", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
-    if (ImGui::RadioButton("Move##gizmo", m_GizmoOperation == 0)) m_GizmoOperation = 0;
+    // Gizmo operation trio: icon toggle buttons with tooltips (Move / Rotate / Scale).
+    const ImVec2 toolButton(34.0f, 0.0f);
+    const char* gizmoOps[3] = { ICON_PH_ARROWS_OUT_CARDINAL, ICON_PH_ARROWS_CLOCKWISE, ICON_PH_ARROWS_OUT_SIMPLE };
+    const char* gizmoTooltips[3] = { "Move (translate)", "Rotate", "Scale" };
+    for (int op = 0; op < 3; ++op) {
+        const bool active = m_GizmoOperation == op;
+        if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        if (ImGui::Button((std::string(gizmoOps[op]) + "##gizmoOp" + std::to_string(op)).c_str(), toolButton)) m_GizmoOperation = op;
+        if (active) ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", gizmoTooltips[op]);
+        ImGui::SameLine();
+    }
+    if (ImGui::Checkbox(ICON_PH_MAGNET " Snap", &m_GizmoSnap)) {}
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Snap to grid increments");
     ImGui::SameLine();
-    if (ImGui::RadioButton("Rotate##gizmo", m_GizmoOperation == 1)) m_GizmoOperation = 1;
+    if (ImGui::Checkbox(ICON_PH_GRID_FOUR " Grid", &m_ShowGrid)) {}
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggle the viewport grid");
     ImGui::SameLine();
-    if (ImGui::RadioButton("Scale##gizmo", m_GizmoOperation == 2)) m_GizmoOperation = 2;
+    if (ImGui::Checkbox(ICON_PH_FRAME_CORNERS " Local", &m_GizmoLocal)) {}
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Local vs world gizmo orientation");
     ImGui::SameLine();
-    ImGui::Checkbox("Snap", &m_GizmoSnap);
-    ImGui::SameLine();
-    ImGui::Checkbox("Grid", &m_ShowGrid);
-    ImGui::SameLine();
-    ImGui::Checkbox("Local", &m_GizmoLocal);
-    ImGui::SameLine();
-    if (ImGui::Button("Focus##focusSel")) FrameSelected();
+    if (ImGui::Button(ICON_PH_CROSSHAIR " Focus##focusSel")) FrameSelected();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Frame the selected entity");
 
     ImGui::End();
 
@@ -450,17 +463,31 @@ void EditorApp::DrawGizmo(const ImVec2& fullExtent, float aspectRatio) {
 // Hierarchy panel
 // ---------------------------------------------------------------------------
 
+// Editor row glyph for an entity, picked from its first "interesting" component.
+const char* EntityTypeGlyph(const ecs::World& world, ecs::Entity e) {
+    if (world.HasComponent<DirectionalLightComponent>(e)) return ICON_PH_SUN;
+    if (world.HasComponent<PointLightComponent>(e)) return ICON_PH_LIGHTBULB;
+    if (world.HasComponent<CameraComponent>(e)) return ICON_PH_CAMERA;
+    if (world.HasComponent<AudioSourceComponent>(e)) return ICON_PH_MUSIC_NOTE;
+    if (world.HasComponent<ScriptComponent>(e)) return ICON_PH_FILE_CODE;
+    if (world.HasComponent<MeshRendererComponent>(e)) return ICON_PH_CUBE;
+    if (world.HasComponent<RigidbodyComponent>(e)) return ICON_PH_PACKAGE;
+    return ICON_PH_SQUARES_FOUR;
+}
+
 void EditorApp::DrawEntityNode(ecs::Entity e) {
     auto& world = m_Scene.World();
     const std::string name = world.HasComponent<NameComponent>(e) ? world.GetComponent<NameComponent>(e).name
                                                                   : ("Entity " + std::to_string(static_cast<uint32_t>(e)));
     const auto& children = m_Scene.ChildrenOf(e);
+    const char* typeGlyph = EntityTypeGlyph(world, e);
 
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
     if (children.empty()) flags |= ImGuiTreeNodeFlags_Leaf;
     if (e == m_Selected) flags |= ImGuiTreeNodeFlags_Selected;
 
-    const bool open = ImGui::TreeNodeEx(reinterpret_cast<void*>(static_cast<uintptr_t>(e) + 1), flags, "%s", name.c_str());
+    const std::string label = std::string(typeGlyph) + "  " + name;
+    const bool open = ImGui::TreeNodeEx(reinterpret_cast<void*>(static_cast<uintptr_t>(e) + 1), flags, "%s", label.c_str());
     if (ImGui::IsItemClicked()) m_Selected = e;
 
     // Per-row renderer visibility toggle.
@@ -481,20 +508,23 @@ void EditorApp::DrawEntityNode(ecs::Entity e) {
 void EditorApp::DrawHierarchyPanel() {
     if (!ImGui::Begin("Hierarchy", &m_ShowHierarchy)) { ImGui::End(); return; }
 
-    if (ImGui::SmallButton("+ Add")) {
+    if (ImGui::SmallButton(ICON_PH_PLUS " Add##addEntity")) {
         m_Selected = m_Scene.CreateEntity("Entity");
         m_Scene.MarkDirty();
     }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Create empty entity");
     ImGui::SameLine();
-    if (ImGui::SmallButton("Duplicate") && m_Selected != ecs::NullEntity) {
+    if (ImGui::SmallButton(ICON_PH_COPY " Duplicate##dupEntity") && m_Selected != ecs::NullEntity) {
         m_Selected = m_Scene.DuplicateEntity(m_Selected);
         m_Scene.MarkDirty();
     }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Duplicate selected (Ctrl+D)");
     ImGui::SameLine();
-    if (ImGui::SmallButton("Delete") && m_Selected != ecs::NullEntity) {
+    if (ImGui::SmallButton(ICON_PH_TRASH " Delete##delEntity") && m_Selected != ecs::NullEntity) {
         m_DeleteList.push_back(m_Selected);
         m_Selected = ecs::NullEntity;
     }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Delete selected (Del)");
     ImGui::Separator();
 
     const auto roots = m_Scene.RootEntities();
@@ -658,17 +688,17 @@ std::vector<AssetEntry> ScanAssets(const std::filesystem::path& projectDir, cons
 }
 
 const char* AssetGlyph(const AssetEntry& e) {
-    if (e.isDirectory) return "[DIR]";
+    if (e.isDirectory) return ICON_PH_FOLDER;
     const std::string ext = e.absolute.extension().string();
-    if (ext == ".ravenscene") return "[SCN]";
-    if (ext == ".ravenmesh" || ext == ".obj" || ext == ".fbx") return "[MSH]";
-    if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".tga" || ext == ".hdr") return "[TEX]";
-    if (ext == ".lua") return "[LUA]";
-    if (ext == ".wav" || ext == ".ogg" || ext == ".mp3" || ext == ".flac") return "[AUD]";
-    if (ext == ".ravenmaterial") return "[MAT]";
-    if (ext == ".ravenprefab") return "[PFB]";
-    if (ext == ".spv") return "[SPV]";
-    return "[???]";
+    if (ext == ".ravenscene") return ICON_PH_FILM_STRIP;
+    if (ext == ".ravenmesh" || ext == ".obj" || ext == ".fbx") return ICON_PH_CUBE;
+    if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".tga" || ext == ".hdr") return ICON_PH_IMAGE;
+    if (ext == ".lua") return ICON_PH_FILE_CODE;
+    if (ext == ".wav" || ext == ".ogg" || ext == ".mp3" || ext == ".flac") return ICON_PH_MUSIC_NOTE;
+    if (ext == ".ravenmaterial") return ICON_PH_PALETTE;
+    if (ext == ".ravenprefab") return ICON_PH_PACKAGE;
+    if (ext == ".spv") return ICON_PH_CPU;
+    return ICON_PH_SLIDERS_HORIZONTAL;
 }
 } // namespace
 
@@ -679,10 +709,11 @@ void EditorApp::DrawAssetsPanel() {
     static double lastScan = -1000.0;
     const double now = ImGui::GetTime();
     const bool needsScan = (now - lastScan) > 3.0;
-    if (ImGui::SmallButton("Refresh") || needsScan) {
+    if (ImGui::SmallButton(ICON_PH_ARROWS_CLOCKWISE " Refresh##refreshAssets") || needsScan) {
         entries = ScanAssets(m_ProjectDir, m_AssetsDir);
         lastScan = now;
     }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rescan project assets");
     ImGui::SameLine();
     static char filter[128] = "";
     ImGui::SetNextItemWidth(200.0f);

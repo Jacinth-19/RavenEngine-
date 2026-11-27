@@ -78,6 +78,23 @@ bool ParseArgs(int argc, char** argv, EditorArgs& args, bool& showHelp) {
     return true;
 }
 
+// Load the default font and merge in Phosphor Icons (U+E000..U+F8FF private-use area).
+// Called for both the windowed and the headless ImGui contexts. If the icon font
+// fails to load we keep the default font and log — the editor stays usable.
+void LoadRavenFonts(ImGuiIO& io, const char* iconFontDir) {
+    IM_ASSERT(iconFontDir != nullptr);
+    ImFont* base = io.Fonts->AddFontDefault();
+    ImFontConfig config;
+    config.MergeMode = true;   // merge glyphs into the previously added font
+    config.PixelSnapH = true;
+    static const ImWchar phosphorRanges[] = { 0xE000, 0xF8FF, 0 };
+    const std::string iconPath = std::string(iconFontDir) + "/Phosphor.ttf";
+    if (io.Fonts->AddFontFromFileTTF(iconPath.c_str(), 13.0f, &config, phosphorRanges) == nullptr) {
+        fprintf(stderr, "RavenEditor: failed to load icon font %s (icons will render as boxes)\n", iconPath.c_str());
+    }
+    (void)base;
+}
+
 // Initialize ImGui + Vulkan backend for the given color format.
 bool InitImGuiVulkan(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device,
                      uint32_t queueFamily, VkQueue queue, VkFormat colorFormat,
@@ -209,6 +226,7 @@ int main(int argc, char** argv) {
         ImGuiIO& io = ImGui::GetIO();
         io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
         io.IniFilename = nullptr;   // do not write editor state in headless mode
+        LoadRavenFonts(io, RAVEN_PHOSPHOR_FONT_DIR);
 
         if (!InitImGuiVulkan(renderer.Instance(), renderer.PhysicalDevice(), renderer.Device(),
                              renderer.GraphicsQueueFamily(), renderer.GraphicsQueue(),
@@ -258,6 +276,7 @@ int main(int argc, char** argv) {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     io.IniFilename = "raven_editor.ini";
+    LoadRavenFonts(io, RAVEN_PHOSPHOR_FONT_DIR);
 
     ImGui_ImplGlfw_InitForVulkan(window, true);
     if (!InitImGuiVulkan(renderer.Instance(), renderer.PhysicalDevice(), renderer.Device(),

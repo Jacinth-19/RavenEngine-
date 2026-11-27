@@ -15,6 +15,7 @@
 #include <stb_image_write.h>
 
 #include <cstring>
+#include <tracy/Tracy.hpp>
 #include <fstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -2574,6 +2575,7 @@ void Renderer::RequestSwapchainResize(uint32_t width, uint32_t height) {
 }
 
 bool Renderer::RenderFrame(Scene& scene, const Camera& camera, const FrameParams& params) {
+    ZoneScopedN("Renderer::RenderFrame");
     Impl& impl = *m_Impl;
     if (!impl.swapchain) return false;
 
