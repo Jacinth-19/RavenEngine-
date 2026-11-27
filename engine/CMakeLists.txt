@@ -34,7 +34,8 @@ target_link_libraries(raven_core
         raven_stb
         raven_tinyobj
         raven_lua
-        raven_miniaudio)
+        raven_miniaudio
+        raven_spdlog)
 
 if(MSVC)
     target_compile_options(raven_core PRIVATE /W3)
@@ -64,7 +65,9 @@ if(RAVEN_VULKAN_FOUND)
     target_link_libraries(raven_render
         PUBLIC
             raven_core
-            raven::vulkan)
+            raven::vulkan
+            raven_vma
+            raven::tracy)
     if(MSVC)
         target_compile_options(raven_render PRIVATE /W3)
     else()

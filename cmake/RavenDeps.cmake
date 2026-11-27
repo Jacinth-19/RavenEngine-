@@ -134,3 +134,139 @@ function(raven_find_or_build_glfw)
     set(RAVEN_GLFW_FOUND TRUE PARENT_SCOPE)
     set(RAVEN_GLFW_TARGET_NAME glfw PARENT_SCOPE)
 endfunction()
+
+# -----------------------------------------------------------------------------
+# Extended dependency set (2026-11) — see third_party/manifest.json and
+# third_party/VERSIONS.md for upstream URLs, pins and licenses.
+# Everything below is either vendored under third_party/ or, for the two
+# dependencies too large to vendor (Slang, assimp), a pinned git submodule that
+# configures only when explicitly enabled. Nsight Aftermath is a proprietary
+# NVIDIA SDK and is therefore NOT committed to the repository — see docs/BUILDING.md.
+# -----------------------------------------------------------------------------
+find_package(Threads REQUIRED)
+
+# --- Vulkan Memory Allocator (static impl; header vendored) ---------------------------
+add_library(raven_vma STATIC ${CMAKE_SOURCE_DIR}/engine/src/third_party/vma_impl.cpp)
+add_library(raven::vma ALIAS raven_vma)
+target_include_directories(raven_vma PUBLIC ${CMAKE_SOURCE_DIR}/third_party/vma)
+target_include_directories(raven_vma PRIVATE ${CMAKE_SOURCE_DIR}/third_party/Vulkan-Headers/include)
+target_link_libraries(raven_vma PUBLIC raven_vulkan_headers)
+
+# --- EnTT (interface, header-only ECS) --------------------------------------------------
+add_library(raven_entt INTERFACE)
+add_library(raven::entt ALIAS raven_entt)
+target_include_directories(raven_entt INTERFACE ${CMAKE_SOURCE_DIR}/third_party/entt/src)
+
+# --- spdlog (header-only mode; formatting, sinks, coloring, thread safety) ---------------
+add_library(raven_spdlog INTERFACE)
+add_library(raven::spdlog ALIAS raven_spdlog)
+target_include_directories(raven_spdlog INTERFACE ${CMAKE_SOURCE_DIR}/third_party/spdlog/include)
+target_link_libraries(raven_spdlog INTERFACE Threads::Threads)
+
+# --- SPIRV-Cross (static; shader reflection subset — no cross-compilation backends) -----
+add_library(raven_spirv_cross STATIC
+    ${CMAKE_SOURCE_DIR}/third_party/spirv-cross/spirv_cross.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/spirv-cross/spirv_parser.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/spirv-cross/spirv_cfg.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/spirv-cross/spirv_glsl.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/spirv-cross/spirv_cross_parsed_ir.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/spirv-cross/spirv_cross_util.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/spirv-cross/spirv_reflect.cpp)
+add_library(raven::spirv_cross ALIAS raven_spirv_cross)
+target_include_directories(raven_spirv_cross PUBLIC ${CMAKE_SOURCE_DIR}/third_party/spirv-cross)
+target_include_directories(raven_spirv_cross PRIVATE ${CMAKE_SOURCE_DIR}/third_party/Vulkan-Headers/include)
+set_target_properties(raven_spirv_cross PROPERTIES CXX_STANDARD 17)
+if(MSVC)
+    target_compile_options(raven_spirv_cross PRIVATE /w)
+else()
+    target_compile_options(raven_spirv_cross PRIVATE -w)
+endif()
+
+# --- bc7enc_rdo (static; BC7/BC5 texture compression, plain-C++ path, no ISPC) -----------
+add_library(raven_bc7enc STATIC
+    ${CMAKE_SOURCE_DIR}/third_party/bc7enc_rdo/bc7enc.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/bc7enc_rdo/bc7decomp.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/bc7enc_rdo/rgbcx.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/bc7enc_rdo/utils.cpp
+    ${CMAKE_SOURCE_DIR}/third_party/bc7enc_rdo/lodepng.cpp)
+# NOTE: ert.cpp + rdo_bc_encoder.cpp (the BC7 rate-distortion optimization pipeline) are
+# intentionally NOT compiled. ert.cpp failed to compile on the Ubuntu 24.04 CI runner with
+# "'const struct ert::color_rgba' has no member named 'm_c'" (bc7enc_rdo b943862) while the
+# same sources build cleanly on GCC 12/13 locally — the cause is not yet understood and the
+# TU is out of scope for import-time BCn. The files remain vendored untouched upstream code.
+# When the BCn import work lands (docs/EDITOR_DESIGN.md Phase 3), revisit: either fix the
+# mismatch or drop the RDO path permanently.
+add_library(raven::bc7enc ALIAS raven_bc7enc)
+target_include_directories(raven_bc7enc PUBLIC ${CMAKE_SOURCE_DIR}/third_party/bc7enc_rdo)
+target_compile_definitions(raven_bc7enc PRIVATE SUPPORT_BC7E=0)
+if(MSVC)
+    target_compile_options(raven_bc7enc PRIVATE /w)
+else()
+    target_compile_options(raven_bc7enc PRIVATE -w)
+endif()
+
+# --- Tracy (frame profiler client; macros are no-ops unless RAVEN_ENABLE_TRACY=ON) -------
+option(RAVEN_ENABLE_TRACY "Build and link the Tracy profiler client (enables TRACY_ZONE/ZoneScoped zones)" OFF)
+if(RAVEN_ENABLE_TRACY)
+    add_library(raven_tracy STATIC ${CMAKE_SOURCE_DIR}/third_party/tracy/public/TracyClient.cpp)
+    add_library(raven::tracy ALIAS raven_tracy)
+    target_include_directories(raven_tracy PUBLIC ${CMAKE_SOURCE_DIR}/third_party/tracy/public)
+    target_compile_definitions(raven_tracy PUBLIC TRACY_ENABLE)
+    target_link_libraries(raven_tracy PUBLIC dl Threads::Threads)
+    if(MSVC)
+        target_compile_options(raven_tracy PRIVATE /w)
+    else()
+        target_compile_options(raven_tracy PRIVATE -w)
+    endif()
+else()
+    add_library(raven_tracy INTERFACE)
+    add_library(raven::tracy ALIAS raven_tracy)
+    target_include_directories(raven_tracy INTERFACE ${CMAKE_SOURCE_DIR}/third_party/tracy/public)
+endif()
+
+# --- Jolt Physics (static; full engine source vendored, built on demand) ------------------
+option(RAVEN_BUILD_JOLT "Build the vendored Jolt Physics library" OFF)
+if(RAVEN_BUILD_JOLT)
+    if(NOT EXISTS ${CMAKE_SOURCE_DIR}/third_party/jolt/Build/CMakeLists.txt)
+        message(FATAL_ERROR "RAVEN_BUILD_JOLT=ON but third_party/jolt is incomplete — restore it from the repository.")
+    endif()
+    set(OVERRIDE_CXX_FLAGS OFF CACHE BOOL "" FORCE)
+    set(INTERPROCEDURAL_OPTIMIZATION OFF CACHE BOOL "" FORCE)
+    set(FLOATING_POINT_EXCEPTIONS_ENABLED OFF CACHE BOOL "" FORCE)
+    set(USE_ASSERTS OFF CACHE BOOL "" FORCE)
+    # Build/CMakeLists.txt sets PHYSICS_REPO_ROOT itself; target name is "Jolt" (Jolt::Jolt).
+    add_subdirectory(${CMAKE_SOURCE_DIR}/third_party/jolt/Build third_party-jolt-build)
+else()
+    message(STATUS "RavenEngine: Jolt Physics vendored but not built (RAVEN_BUILD_JOLT=ON to enable)")
+endif()
+
+# --- Phosphor Icons (editor icon font; runtime-loaded TTF, no compilation) ----------------
+add_library(raven_phosphor INTERFACE)
+add_library(raven::phosphor ALIAS raven_phosphor)
+target_compile_definitions(raven_phosphor INTERFACE RAVEN_PHOSPHOR_FONT_DIR="${CMAKE_SOURCE_DIR}/third_party/phosphor/fonts")
+
+# --- Slang (shader-slang/slang) — pinned git submodule, too large to vendor ----------------
+# GitHub stores the gitlink; contents are fetched with:
+#   git submodule update --init third_party/slang
+option(RAVEN_USE_SLANG "Configure against the Slang shader compiler (submodule third_party/slang)" OFF)
+if(RAVEN_USE_SLANG)
+    if(NOT EXISTS ${CMAKE_SOURCE_DIR}/third_party/slang/CMakeLists.txt)
+        message(FATAL_ERROR "RAVEN_USE_SLANG=ON but third_party/slang is not checked out. Run: git submodule update --init third_party/slang")
+    endif()
+    message(STATUS "RavenEngine: Slang submodule found at ${CMAKE_SOURCE_DIR}/third_party/slang")
+endif()
+
+# --- assimp (model importing) — pinned git submodule, too large to vendor ------------------
+option(RAVEN_USE_ASSIMP "Configure against the assimp importer (submodule third_party/assimp)" OFF)
+if(RAVEN_USE_ASSIMP)
+    if(NOT EXISTS ${CMAKE_SOURCE_DIR}/third_party/assimp/CMakeLists.txt)
+        message(FATAL_ERROR "RAVEN_USE_ASSIMP=ON but third_party/assimp is not checked out. Run: git submodule update --init third_party/assimp")
+    endif()
+    set(ASSIMP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(ASSIMP_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+    set(ASSIMP_BUILD_ASSIMP_TOOLS OFF CACHE BOOL "" FORCE)
+    set(ASSIMP_NO_EXPORT ON CACHE BOOL "" FORCE)
+    set(ASSIMP_INJECT_DEBUG_POSTFIX OFF CACHE BOOL "" FORCE)
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    add_subdirectory(${CMAKE_SOURCE_DIR}/third_party/assimp third_party-assimp-build EXCLUDE_FROM_ALL)
+endif()

@@ -1,18 +1,16 @@
-// RavenEngine — minimal, dependency-free leveled logger.
-// Writes to the console (colored on TTYs), an optional file sink and an
-// optional callback (used by the editor console panel).
+// RavenEngine — leveled logger, implemented on top of spdlog.
+// Keeps the historical API and output shape ("HH:MM:SS.mmm [LVL] message");
+// spdlog provides the sinks, coloring, pattern formatting and thread safety.
 #pragma once
 
 #include <cstdint>
 #include <cstdio>
-#include <fstream>
 #include <functional>
-#include <mutex>
-#include <sstream>
+#include <memory>
 #include <string>
-#include <vector>
-#include <chrono>
-#include <iomanip>
+
+// spdlog is compiled header-only in this project (SPDLOG_HEADER_ONLY is set on
+// raven::spdlog); see cmake/RavenDeps.cmake.
 
 namespace raven {
 
@@ -26,11 +24,11 @@ public:
 
     static Logger& Instance();
 
-    void SetLevel(LogLevel level) { m_Level = level; }
-    LogLevel GetLevel() const { return m_Level; }
+    void SetLevel(LogLevel level);
+    LogLevel GetLevel() const;
 
     void SetFileSink(const std::string& path);          // empty path disables
-    void SetEchoToConsole(bool enabled) { m_Console = enabled; }
+    void SetEchoToConsole(bool enabled);
     void AddCallback(Callback cb);                      // editor hooks in here
     void ClearCallbacks();
 
@@ -51,12 +49,8 @@ public:
 private:
     Logger();
     ~Logger();
-
-    std::mutex m_Mutex;
-    LogLevel m_Level = LogLevel::Info;
-    bool m_Console = true;
-    std::ofstream m_File;
-    std::vector<Callback> m_Callbacks;
+    struct Impl;                 // hides the spdlog sink types from this header
+    std::unique_ptr<Impl> m_Impl;
 };
 
 } // namespace raven

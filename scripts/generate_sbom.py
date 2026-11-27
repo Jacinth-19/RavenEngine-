@@ -31,6 +31,7 @@ def license_entries(license_str):
         "Zlib": "Zlib",
         "MIT/PD": "(MIT OR Unlicense)",
         "Unlicense/MIT-0": "(Unlicense OR MIT-0)",
+        "BSD-3-Clause": "BSD-3-Clause",
     }
     text = license_str.strip()
     spdx = expr_map.get(text, text if "/" not in text else None)

@@ -15,6 +15,7 @@ target_include_directories(ravened PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(ravened PRIVATE
     raven_render
     raven_imgui
+    raven_phosphor
     ${RAVEN_GLFW_TARGET_NAME})
 
 if(UNIX AND NOT APPLE)

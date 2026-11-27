@@ -165,6 +165,50 @@ smoke test). macOS runners without a Metal device available will skip the GPU sm
 | `RAVEN_ENABLE_ASAN`       | OFF     | AddressSanitizer for engine targets        |
 | `RAVEN_FORCE_VENDORED_GLFW` | OFF   | Ignore system GLFW, build vendored 3.4     |
 | `RAVEN_GUI_HEADLESS`      | OFF     | No X11/Wayland: build null-platform GLFW so the GUI apps run headless (offscreen) |
+| `RAVEN_ENABLE_TRACY`      | OFF     | Build/link the Tracy profiler client (`TRACY_ENABLE` zones) |
+| `RAVEN_BUILD_JOLT`        | OFF     | Build vendored Jolt Physics (`Jolt::Jolt`) |
+| `RAVEN_USE_SLANG`         | OFF     | Configure Slang from the `third_party/slang` submodule |
+| `RAVEN_USE_ASSIMP`        | OFF     | Configure assimp from the `third_party/assimp` submodule |
+
+## Extended dependency set (2026-11)
+
+Newly wired in this cycle (all pinned — see `third_party/VERSIONS.md` and `third_party/manifest.json`):
+
+- **VMA** (`raven_vma`) — Vulkan Memory Allocator; `engine/src/third_party/vma_impl.cpp` is the
+  single implementation TU. Linked into `raven_render`.
+- **EnTT** (`raven::entt`) — header-only ECS, ready for renderer-side adoption.
+- **spdlog** (`raven::spdlog`, header-only) — logging backend. `raven::Logger` keeps its API
+  and line format; RAVEN_LOG_* macros are unchanged. The previous hand-rolled logger is gone.
+- **SPIRV-Cross** (`raven_spirv_cross`) — reflection subset for the future Slang-reflection
+  pipeline (exact set/binding extraction).
+- **Jolt Physics** (`RAVEN_BUILD_JOLT=ON`) — full Jolt source vendored (samples/tests omitted).
+- **bc7enc_rdo** (`raven_bc7enc`) — BCn texture compression at import time; bundles `lodepng`
+  (PNG load/save) and `miniz` (zlib) for its utils.
+- **Tracy** (`RAVEN_ENABLE_TRACY=ON`) — client only; `ZoneScopedN("Renderer::RenderFrame")`
+  is active in `Renderer::RenderFrame`. Connect the Tracy GUI to a ravened/raven-sandbox run
+  to profile. Off by default: macros compile to no-ops.
+- **Phosphor Icons** (`raven::phosphor`) — icon font merged into the editor font at startup;
+  glyph constants in `editor/phosphor_icons.h`. Used by the viewport toolbar, hierarchy,
+  asset list, menu bar and about dialog.
+- **Slang** / **assimp** — git submodules (too large to vendor), off by default.
+  `git submodule update --init third_party/slang third_party/assimp` then
+  `-DRAVEN_USE_SLANG=ON -DRAVEN_USE_ASSIMP=ON`.
+
+### Not redistributable: Nsight Aftermath
+
+Nsight Aftermath (GPU crash dumps on device-lost) is a **proprietary NVIDIA SDK** and is not
+committed to this repository. To enable it: download the SDK from developer.nvidia.com,
+unpack it anywhere, and point your build at it (`-DNsightAftermath_ROOT=<path>`; reserved
+for the Aftermath integration — not yet wired into the Vulkan context). Without it the
+engine runs normally; crash dumps are simply unavailable.
+
+### Vulkan SDK
+
+Vulkan is a **system dependency**: headers are vendored (`third_party/Vulkan-Headers`),
+the loader comes from your platform (see the platform sections above). The Vulkan SDK from
+LunarG also bundles tooling we use but do not redistribute (glslang, SPIRV-Tools, validation
+layers); install it if you need the toolchain, but it is not required to build.
+
 
 ## Maintenance
 

@@ -15,7 +15,6 @@ namespace raven {
 namespace {
 
 nlohmann::json Vec3ToJson(const glm::vec3& v) { return nlohmann::json::array({v.x, v.y, v.z}); }
-nlohmann::json Vec4ToJson(const glm::vec4& v) { return nlohmann::json::array({v.x, v.y, v.z, v.w}); }
 
 glm::vec3 JsonToVec3(const nlohmann::json& j, const glm::vec3& fallback = glm::vec3(0.0f)) {
     if (!j.is_array() || j.size() < 3) return fallback;
