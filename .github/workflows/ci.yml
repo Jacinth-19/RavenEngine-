@@ -15,7 +15,7 @@ jobs:
     name: Linux (Ubuntu, Lavapipe) — build + tests + SBOM
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Layering guard (engine/sandbox must not reference the editor)
         run: python3 scripts/check_layering.py
@@ -105,7 +105,7 @@ jobs:
     name: Windows (MSVC) — build + core tests
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Vulkan SDK (LunarG, via Chocolatey — best effort)
         continue-on-error: true
@@ -187,7 +187,7 @@ jobs:
     name: macOS (MoltenVK) — build + core tests
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install build tools + Vulkan (MoltenVK)
         run: brew install cmake ninja vulkan-loader molten-vk glfw
@@ -221,7 +221,7 @@ jobs:
     name: Build summary + file inventory
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Repository sanity
         run: |
           test -f LICENSE
