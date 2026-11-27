@@ -28,6 +28,216 @@ UUID JsonToUUID(const nlohmann::json& j) {
     return parsed.value_or(UUID::Nil());
 }
 
+// Collect a subtree: out[0] = root, then descendants depth-first in children order
+// (deterministic; matches the snapshot layout produced by SerializeSubtree).
+void CollectSubtree(const ecs::World& world, ecs::Entity root, std::vector<ecs::Entity>& out) {
+    if (!world.IsAlive(root)) return;
+    out.push_back(root);
+    if (!world.HasComponent<TransformComponent>(root)) return;
+    for (ecs::Entity child : world.GetComponent<TransformComponent>(root).children)
+        CollectSubtree(world, child, out);
+}
+
+// Per-entity component serialization shared by scene I/O and the subtree snapshot
+// path (undo/redo of destroy/duplicate). Parent references inside the emitted JSON
+// are indices into `fileIds` (-1 when the referenced entity is not in the set).
+nlohmann::json SerializeEntityComponents(const ecs::World& world, ecs::Entity e,
+                                         const std::unordered_map<ecs::Entity, int>& fileIds) {
+    nlohmann::json components = nlohmann::json::object();
+
+        if (world.HasComponent<NameComponent>(e)) {
+            components["name"] = {{"name", world.GetComponent<NameComponent>(e).name}};
+        }
+        if (world.HasComponent<UuidComponent>(e)) {
+            components["uuid"] = {{"id", UUIDToJson(world.GetComponent<UuidComponent>(e).id)}};
+        }
+        if (world.HasComponent<TransformComponent>(e)) {
+            const auto& t = world.GetComponent<TransformComponent>(e);
+            int parentFileId = -1;
+            auto it = fileIds.find(t.parent);
+            if (it != fileIds.end()) parentFileId = it->second;
+            components["transform"] = {{"position", Vec3ToJson(t.position)},
+                                       {"rotation", Vec3ToJson(t.rotation)},
+                                       {"scale", Vec3ToJson(t.scale)},
+                                       {"parent", parentFileId}};
+        }
+        if (world.HasComponent<MeshRendererComponent>(e)) {
+            const auto& m = world.GetComponent<MeshRendererComponent>(e);
+            components["meshRenderer"] = {{"mesh", UUIDToJson(m.mesh)},
+                                          {"material", UUIDToJson(m.material)},
+                                          {"castShadow", m.castShadow},
+                                          {"visible", m.visible}};
+        }
+        if (world.HasComponent<LodComponent>(e)) {
+            const auto& lod = world.GetComponent<LodComponent>(e);
+            nlohmann::json levels = nlohmann::json::array();
+            for (const UUID& u : lod.levels) levels.push_back(UUIDToJson(u));
+            components["lod"] = {{"levels", std::move(levels)},
+                                 {"screenHeights", lod.screenHeights},
+                                 {"boundingRadius", lod.boundingRadius},
+                                 {"lodBias", lod.lodBias}};
+        }
+        if (world.HasComponent<DirectionalLightComponent>(e)) {
+            const auto& l = world.GetComponent<DirectionalLightComponent>(e);
+            components["directionalLight"] = {{"direction", Vec3ToJson(l.direction)},
+                                              {"color", Vec3ToJson(l.color)},
+                                              {"intensity", l.intensity},
+                                              {"castShadow", l.castShadow}};
+        }
+        if (world.HasComponent<PointLightComponent>(e)) {
+            const auto& l = world.GetComponent<PointLightComponent>(e);
+            components["pointLight"] = {{"color", Vec3ToJson(l.color)},
+                                        {"intensity", l.intensity},
+                                        {"radius", l.radius}};
+        }
+        if (world.HasComponent<CameraComponent>(e)) {
+            const auto& c = world.GetComponent<CameraComponent>(e);
+            components["camera"] = {{"fovDegrees", c.fovDegrees},
+                                    {"nearPlane", c.nearPlane},
+                                    {"farPlane", c.farPlane},
+                                    {"isPrimary", c.isPrimary}};
+        }
+        if (world.HasComponent<RigidbodyComponent>(e)) {
+            const auto& r = world.GetComponent<RigidbodyComponent>(e);
+            components["rigidbody"] = {{"type", r.type == RigidbodyType::Dynamic ? "dynamic" : "static"},
+                                       {"mass", r.mass},
+                                       {"linearVelocity", Vec3ToJson(r.linearVelocity)},
+                                       {"useGravity", r.useGravity},
+                                       {"restitution", r.restitution}};
+        }
+        if (world.HasComponent<BoxColliderComponent>(e)) {
+            const auto& c = world.GetComponent<BoxColliderComponent>(e);
+            components["boxCollider"] = {{"halfExtents", Vec3ToJson(c.halfExtents)}};
+        }
+        if (world.HasComponent<AudioSourceComponent>(e)) {
+            const auto& a = world.GetComponent<AudioSourceComponent>(e);
+            components["audioSource"] = {{"clip", UUIDToJson(a.clip)},
+                                         {"volume", a.volume},
+                                         {"loop", a.loop},
+                                         {"playOnStart", a.playOnStart},
+                                         {"is3D", a.is3D}};
+        }
+        if (world.HasComponent<ScriptComponent>(e)) {
+            const auto& s = world.GetComponent<ScriptComponent>(e);
+            components["script"] = {{"scriptPath", s.scriptPath}, {"enabled", s.enabled}};
+        }
+        if (world.HasComponent<PrefabInstanceComponent>(e)) {
+            const auto& p = world.GetComponent<PrefabInstanceComponent>(e);
+            components["prefabInstance"] = {{"prefab", UUIDToJson(p.prefab)}};
+        }
+
+    return components;
+}
+
+// Per-entity component application, shared by scene I/O and the subtree restore
+// path. Parent references follow `fileMap` (same layout as SerializeEntityComponents).
+// honorUuid=false keeps freshly minted UuidComponents (duplicate).
+void ApplyEntityComponents(ecs::World& world, ecs::Entity e, const nlohmann::json& components,
+                           const std::vector<ecs::Entity>& fileMap, bool honorUuid) {
+        if (honorUuid && components.contains("uuid")) {
+            const UUID parsed = JsonToUUID(components["uuid"].value("id", nlohmann::json()));
+            if (!parsed.IsNil()) world.AddComponent<UuidComponent>(e, UuidComponent(parsed));
+        }
+        if (components.contains("transform")) {
+            const auto& t = components["transform"];
+            auto& transform = world.GetComponent<TransformComponent>(e);
+            transform.position = JsonToVec3(t.value("position", nlohmann::json::array()));
+            transform.rotation = JsonToVec3(t.value("rotation", nlohmann::json::array()));
+            transform.scale = JsonToVec3(t.value("scale", nlohmann::json::array({1, 1, 1})), glm::vec3(1.0f));
+            if (t.contains("parent")) {   // absent = keep existing parentage (single-component paste)
+                int parentFileId = t.value("parent", -1);
+                if (parentFileId >= 0 && static_cast<size_t>(parentFileId) < fileMap.size())
+                    transform.parent = fileMap[static_cast<size_t>(parentFileId)];
+                else
+                    transform.parent = ecs::NullEntity;
+            }
+        }
+        if (components.contains("meshRenderer")) {
+            const auto& m = components["meshRenderer"];
+            MeshRendererComponent mc;
+            mc.mesh = JsonToUUID(m.value("mesh", nlohmann::json()));
+            mc.material = JsonToUUID(m.value("material", nlohmann::json()));
+            mc.castShadow = m.value("castShadow", true);
+            mc.visible = m.value("visible", true);
+            world.AddComponent<MeshRendererComponent>(e, mc);
+        }
+        if (components.contains("lod")) {
+            const auto& l = components["lod"];
+            LodComponent lc;
+            if (l.contains("levels") && l["levels"].is_array()) {
+                for (const auto& u : l["levels"]) lc.levels.push_back(JsonToUUID(u));
+            }
+            lc.screenHeights = l.value("screenHeights", std::vector<float>{});
+            lc.boundingRadius = l.value("boundingRadius", 1.0f);
+            lc.lodBias = l.value("lodBias", 0.0f);
+            world.AddComponent<LodComponent>(e, lc);
+        }
+        if (components.contains("directionalLight")) {
+            const auto& l = components["directionalLight"];
+            DirectionalLightComponent lc;
+            lc.direction = glm::normalize(JsonToVec3(l.value("direction", nlohmann::json::array()), glm::vec3(0, -1, 0)));
+            lc.color = JsonToVec3(l.value("color", nlohmann::json::array({1, 1, 1})), glm::vec3(1));
+            lc.intensity = l.value("intensity", 3.0f);
+            lc.castShadow = l.value("castShadow", true);
+            world.AddComponent<DirectionalLightComponent>(e, lc);
+        }
+        if (components.contains("pointLight")) {
+            const auto& l = components["pointLight"];
+            PointLightComponent lc;
+            lc.color = JsonToVec3(l.value("color", nlohmann::json::array({1, 1, 1})), glm::vec3(1));
+            lc.intensity = l.value("intensity", 10.0f);
+            lc.radius = l.value("radius", 5.0f);
+            world.AddComponent<PointLightComponent>(e, lc);
+        }
+        if (components.contains("camera")) {
+            const auto& c = components["camera"];
+            CameraComponent cc;
+            cc.fovDegrees = c.value("fovDegrees", 60.0f);
+            cc.nearPlane = c.value("nearPlane", 0.1f);
+            cc.farPlane = c.value("farPlane", 250.0f);
+            cc.isPrimary = c.value("isPrimary", false);
+            world.AddComponent<CameraComponent>(e, cc);
+        }
+        if (components.contains("rigidbody")) {
+            const auto& r = components["rigidbody"];
+            RigidbodyComponent rc;
+            rc.type = r.value("type", std::string("dynamic")) == "static" ? RigidbodyType::Static : RigidbodyType::Dynamic;
+            rc.mass = r.value("mass", 1.0f);
+            rc.linearVelocity = JsonToVec3(r.value("linearVelocity", nlohmann::json::array()));
+            rc.useGravity = r.value("useGravity", true);
+            rc.restitution = r.value("restitution", 0.35f);
+            world.AddComponent<RigidbodyComponent>(e, rc);
+        }
+        if (components.contains("boxCollider")) {
+            const auto& c = components["boxCollider"];
+            BoxColliderComponent bc;
+            bc.halfExtents = JsonToVec3(c.value("halfExtents", nlohmann::json::array({0.5, 0.5, 0.5})), glm::vec3(0.5f));
+            world.AddComponent<BoxColliderComponent>(e, bc);
+        }
+        if (components.contains("audioSource")) {
+            const auto& a = components["audioSource"];
+            AudioSourceComponent ac;
+            ac.clip = JsonToUUID(a.value("clip", nlohmann::json()));
+            ac.volume = a.value("volume", 1.0f);
+            ac.loop = a.value("loop", false);
+            ac.playOnStart = a.value("playOnStart", false);
+            ac.is3D = a.value("is3D", true);
+            world.AddComponent<AudioSourceComponent>(e, ac);
+        }
+        if (components.contains("script")) {
+            const auto& s = components["script"];
+            ScriptComponent sc;
+            sc.scriptPath = s.value("scriptPath", std::string());
+            sc.enabled = s.value("enabled", true);
+            world.AddComponent<ScriptComponent>(e, sc);
+        }
+        if (components.contains("prefabInstance")) {
+            PrefabInstanceComponent pc;
+            pc.prefab = JsonToUUID(components["prefabInstance"].value("prefab", nlohmann::json()));
+            world.AddComponent<PrefabInstanceComponent>(e, pc);
+        }
+}
+
 } // namespace
 
 // ---------------------------------------------------------------- creation
@@ -246,89 +456,7 @@ std::string Scene::SerializeToString() const {
     nlohmann::json jsonEntities = nlohmann::json::array();
     for (size_t i = 0; i < entities.size(); ++i) {
         ecs::Entity e = entities[i];
-        nlohmann::json components = nlohmann::json::object();
-
-        if (m_World.HasComponent<NameComponent>(e)) {
-            components["name"] = {{"name", m_World.GetComponent<NameComponent>(e).name}};
-        }
-        if (m_World.HasComponent<UuidComponent>(e)) {
-            components["uuid"] = {{"id", UUIDToJson(m_World.GetComponent<UuidComponent>(e).id)}};
-        }
-        if (m_World.HasComponent<TransformComponent>(e)) {
-            const auto& t = m_World.GetComponent<TransformComponent>(e);
-            int parentFileId = -1;
-            auto it = fileIds.find(t.parent);
-            if (it != fileIds.end()) parentFileId = it->second;
-            components["transform"] = {{"position", Vec3ToJson(t.position)},
-                                       {"rotation", Vec3ToJson(t.rotation)},
-                                       {"scale", Vec3ToJson(t.scale)},
-                                       {"parent", parentFileId}};
-        }
-        if (m_World.HasComponent<MeshRendererComponent>(e)) {
-            const auto& m = m_World.GetComponent<MeshRendererComponent>(e);
-            components["meshRenderer"] = {{"mesh", UUIDToJson(m.mesh)},
-                                          {"material", UUIDToJson(m.material)},
-                                          {"castShadow", m.castShadow},
-                                          {"visible", m.visible}};
-        }
-        if (m_World.HasComponent<LodComponent>(e)) {
-            const auto& lod = m_World.GetComponent<LodComponent>(e);
-            nlohmann::json levels = nlohmann::json::array();
-            for (const UUID& u : lod.levels) levels.push_back(UUIDToJson(u));
-            components["lod"] = {{"levels", std::move(levels)},
-                                 {"screenHeights", lod.screenHeights},
-                                 {"boundingRadius", lod.boundingRadius},
-                                 {"lodBias", lod.lodBias}};
-        }
-        if (m_World.HasComponent<DirectionalLightComponent>(e)) {
-            const auto& l = m_World.GetComponent<DirectionalLightComponent>(e);
-            components["directionalLight"] = {{"direction", Vec3ToJson(l.direction)},
-                                              {"color", Vec3ToJson(l.color)},
-                                              {"intensity", l.intensity},
-                                              {"castShadow", l.castShadow}};
-        }
-        if (m_World.HasComponent<PointLightComponent>(e)) {
-            const auto& l = m_World.GetComponent<PointLightComponent>(e);
-            components["pointLight"] = {{"color", Vec3ToJson(l.color)},
-                                        {"intensity", l.intensity},
-                                        {"radius", l.radius}};
-        }
-        if (m_World.HasComponent<CameraComponent>(e)) {
-            const auto& c = m_World.GetComponent<CameraComponent>(e);
-            components["camera"] = {{"fovDegrees", c.fovDegrees},
-                                    {"nearPlane", c.nearPlane},
-                                    {"farPlane", c.farPlane},
-                                    {"isPrimary", c.isPrimary}};
-        }
-        if (m_World.HasComponent<RigidbodyComponent>(e)) {
-            const auto& r = m_World.GetComponent<RigidbodyComponent>(e);
-            components["rigidbody"] = {{"type", r.type == RigidbodyType::Dynamic ? "dynamic" : "static"},
-                                       {"mass", r.mass},
-                                       {"linearVelocity", Vec3ToJson(r.linearVelocity)},
-                                       {"useGravity", r.useGravity},
-                                       {"restitution", r.restitution}};
-        }
-        if (m_World.HasComponent<BoxColliderComponent>(e)) {
-            const auto& c = m_World.GetComponent<BoxColliderComponent>(e);
-            components["boxCollider"] = {{"halfExtents", Vec3ToJson(c.halfExtents)}};
-        }
-        if (m_World.HasComponent<AudioSourceComponent>(e)) {
-            const auto& a = m_World.GetComponent<AudioSourceComponent>(e);
-            components["audioSource"] = {{"clip", UUIDToJson(a.clip)},
-                                         {"volume", a.volume},
-                                         {"loop", a.loop},
-                                         {"playOnStart", a.playOnStart},
-                                         {"is3D", a.is3D}};
-        }
-        if (m_World.HasComponent<ScriptComponent>(e)) {
-            const auto& s = m_World.GetComponent<ScriptComponent>(e);
-            components["script"] = {{"scriptPath", s.scriptPath}, {"enabled", s.enabled}};
-        }
-        if (m_World.HasComponent<PrefabInstanceComponent>(e)) {
-            const auto& p = m_World.GetComponent<PrefabInstanceComponent>(e);
-            components["prefabInstance"] = {{"prefab", UUIDToJson(p.prefab)}};
-        }
-
+        nlohmann::json components = SerializeEntityComponents(m_World, e, fileIds);
         jsonEntities.push_back({{"id", fileIds[e]}, {"components", components}});
     }
     root["entities"] = std::move(jsonEntities);
@@ -369,108 +497,9 @@ bool Scene::LoadFromString(const std::string& text, std::string* error) {
         const auto& components = root["entities"][i].value("components", nlohmann::json::object());
         ecs::Entity e = fileMap[i];
 
-        if (components.contains("uuid")) {
-            const UUID parsed = JsonToUUID(components["uuid"].value("id", nlohmann::json()));
-            if (!parsed.IsNil()) m_World.AddComponent<UuidComponent>(e, UuidComponent(parsed));
-        }
+        ApplyEntityComponents(m_World, e, components, fileMap, /*honorUuid=*/true);
         if (!m_World.HasComponent<UuidComponent>(e))
             m_World.AddComponent<UuidComponent>(e);  // pre-v3 scenes: mint fresh on load
-        if (components.contains("transform")) {
-            const auto& t = components["transform"];
-            auto& transform = m_World.GetComponent<TransformComponent>(e);
-            transform.position = JsonToVec3(t.value("position", nlohmann::json::array()));
-            transform.rotation = JsonToVec3(t.value("rotation", nlohmann::json::array()));
-            transform.scale = JsonToVec3(t.value("scale", nlohmann::json::array({1, 1, 1})), glm::vec3(1.0f));
-            int parentFileId = t.value("parent", -1);
-            if (parentFileId >= 0 && static_cast<size_t>(parentFileId) < fileMap.size())
-                transform.parent = fileMap[static_cast<size_t>(parentFileId)];
-            else
-                transform.parent = ecs::NullEntity;
-        }
-        if (components.contains("meshRenderer")) {
-            const auto& m = components["meshRenderer"];
-            MeshRendererComponent mc;
-            mc.mesh = JsonToUUID(m.value("mesh", nlohmann::json()));
-            mc.material = JsonToUUID(m.value("material", nlohmann::json()));
-            mc.castShadow = m.value("castShadow", true);
-            mc.visible = m.value("visible", true);
-            m_World.AddComponent<MeshRendererComponent>(e, mc);
-        }
-        if (components.contains("lod")) {
-            const auto& l = components["lod"];
-            LodComponent lc;
-            if (l.contains("levels") && l["levels"].is_array()) {
-                for (const auto& u : l["levels"]) lc.levels.push_back(JsonToUUID(u));
-            }
-            lc.screenHeights = l.value("screenHeights", std::vector<float>{});
-            lc.boundingRadius = l.value("boundingRadius", 1.0f);
-            lc.lodBias = l.value("lodBias", 0.0f);
-            m_World.AddComponent<LodComponent>(e, lc);
-        }
-        if (components.contains("directionalLight")) {
-            const auto& l = components["directionalLight"];
-            DirectionalLightComponent lc;
-            lc.direction = glm::normalize(JsonToVec3(l.value("direction", nlohmann::json::array()), glm::vec3(0, -1, 0)));
-            lc.color = JsonToVec3(l.value("color", nlohmann::json::array({1, 1, 1})), glm::vec3(1));
-            lc.intensity = l.value("intensity", 3.0f);
-            lc.castShadow = l.value("castShadow", true);
-            m_World.AddComponent<DirectionalLightComponent>(e, lc);
-        }
-        if (components.contains("pointLight")) {
-            const auto& l = components["pointLight"];
-            PointLightComponent lc;
-            lc.color = JsonToVec3(l.value("color", nlohmann::json::array({1, 1, 1})), glm::vec3(1));
-            lc.intensity = l.value("intensity", 10.0f);
-            lc.radius = l.value("radius", 5.0f);
-            m_World.AddComponent<PointLightComponent>(e, lc);
-        }
-        if (components.contains("camera")) {
-            const auto& c = components["camera"];
-            CameraComponent cc;
-            cc.fovDegrees = c.value("fovDegrees", 60.0f);
-            cc.nearPlane = c.value("nearPlane", 0.1f);
-            cc.farPlane = c.value("farPlane", 250.0f);
-            cc.isPrimary = c.value("isPrimary", false);
-            m_World.AddComponent<CameraComponent>(e, cc);
-        }
-        if (components.contains("rigidbody")) {
-            const auto& r = components["rigidbody"];
-            RigidbodyComponent rc;
-            rc.type = r.value("type", std::string("dynamic")) == "static" ? RigidbodyType::Static : RigidbodyType::Dynamic;
-            rc.mass = r.value("mass", 1.0f);
-            rc.linearVelocity = JsonToVec3(r.value("linearVelocity", nlohmann::json::array()));
-            rc.useGravity = r.value("useGravity", true);
-            rc.restitution = r.value("restitution", 0.35f);
-            m_World.AddComponent<RigidbodyComponent>(e, rc);
-        }
-        if (components.contains("boxCollider")) {
-            const auto& c = components["boxCollider"];
-            BoxColliderComponent bc;
-            bc.halfExtents = JsonToVec3(c.value("halfExtents", nlohmann::json::array({0.5, 0.5, 0.5})), glm::vec3(0.5f));
-            m_World.AddComponent<BoxColliderComponent>(e, bc);
-        }
-        if (components.contains("audioSource")) {
-            const auto& a = components["audioSource"];
-            AudioSourceComponent ac;
-            ac.clip = JsonToUUID(a.value("clip", nlohmann::json()));
-            ac.volume = a.value("volume", 1.0f);
-            ac.loop = a.value("loop", false);
-            ac.playOnStart = a.value("playOnStart", false);
-            ac.is3D = a.value("is3D", true);
-            m_World.AddComponent<AudioSourceComponent>(e, ac);
-        }
-        if (components.contains("script")) {
-            const auto& s = components["script"];
-            ScriptComponent sc;
-            sc.scriptPath = s.value("scriptPath", std::string());
-            sc.enabled = s.value("enabled", true);
-            m_World.AddComponent<ScriptComponent>(e, sc);
-        }
-        if (components.contains("prefabInstance")) {
-            PrefabInstanceComponent pc;
-            pc.prefab = JsonToUUID(components["prefabInstance"].value("prefab", nlohmann::json()));
-            m_World.AddComponent<PrefabInstanceComponent>(e, pc);
-        }
     }
 
     RebuildChildLists();
@@ -500,6 +529,138 @@ bool Scene::Load(const std::filesystem::path& path, std::string* error) {
     if (!LoadFromString(*text, error)) return false;
     m_Path = path;
     m_Dirty = false;
+    return true;
+}
+
+// ------------------------------------------------------------- subtree I/O (undo/redo)
+
+std::vector<ecs::Entity> Scene::SubtreeEntities(ecs::Entity root) const {
+    std::vector<ecs::Entity> order;
+    CollectSubtree(m_World, root, order);
+    return order;
+}
+
+nlohmann::json Scene::SerializeSubtree(ecs::Entity root) const {
+    if (!m_World.IsAlive(root)) return {};
+    std::vector<ecs::Entity> order = SubtreeEntities(root);
+    std::unordered_map<ecs::Entity, int> fileIds;
+    fileIds.reserve(order.size());
+    for (size_t i = 0; i < order.size(); ++i) fileIds[order[i]] = static_cast<int>(i);
+
+    nlohmann::json jsonEntities = nlohmann::json::array();
+    for (size_t i = 0; i < order.size(); ++i) {
+        ecs::Entity e = order[i];
+        nlohmann::json components = SerializeEntityComponents(m_World, e, fileIds);
+        if (i == 0) {   // subtree root — the caller reattaches it (original parent / requested parent)
+            if (components.contains("transform")) components["transform"]["parent"] = -1;
+        }
+        jsonEntities.push_back({{"id", fileIds[e]}, {"components", std::move(components)}});
+    }
+    nlohmann::json rootJson;
+    rootJson["schemaVersion"] = kSchemaVersion;
+    rootJson["name"] = "(subtree)";
+    rootJson["entities"] = std::move(jsonEntities);
+    return rootJson;
+}
+
+ecs::Entity Scene::InstantiateSubtree(const nlohmann::json& snapshot, ecs::Entity parentForRoot, bool preserveUuids) {
+    if (!snapshot.contains("entities") || !snapshot["entities"].is_array()) return ecs::NullEntity;
+    const auto& entities = snapshot["entities"];
+
+    // Pass 1: create entities in snapshot order; remember file id → Entity.
+    std::vector<ecs::Entity> fileMap;
+    fileMap.reserve(entities.size());
+    for (const auto& entry : entities) {
+        std::string name = "Entity";
+        if (entry.contains("components") && entry["components"].contains("name"))
+            name = entry["components"]["name"].value("name", name);
+        fileMap.push_back(CreateEntityInternal(name, false));
+    }
+
+    // Pass 2: apply components (parent links inside the subtree are subtree-local).
+    for (size_t i = 0; i < entities.size(); ++i)
+        ApplyEntityComponents(m_World, fileMap[i], entities[i].value("components", nlohmann::json::object()), fileMap, preserveUuids);
+
+    // The subtree root goes where the caller wants it (original parent on undo,
+    // NullEntity otherwise; an explicit live entity otherwise).
+    if (!fileMap.empty() && parentForRoot != ecs::NullEntity && m_World.IsAlive(parentForRoot)) {
+        if (m_World.HasComponent<TransformComponent>(fileMap[0]))
+            m_World.GetComponent<TransformComponent>(fileMap[0]).parent = parentForRoot;
+    } else if (!fileMap.empty() && m_World.HasComponent<TransformComponent>(fileMap[0])) {
+        m_World.GetComponent<TransformComponent>(fileMap[0]).parent = ecs::NullEntity;
+    }
+
+    // Reattach: push created entities onto their parents' child lists in creation order.
+    for (ecs::Entity e : fileMap) {
+        if (!m_World.HasComponent<TransformComponent>(e)) continue;
+        ecs::Entity p = m_World.GetComponent<TransformComponent>(e).parent;
+        if (p != ecs::NullEntity && m_World.IsAlive(p)) m_World.GetComponent<TransformComponent>(p).children.push_back(e);
+        else m_World.GetComponent<TransformComponent>(e).parent = ecs::NullEntity;
+    }
+
+    m_Dirty = true;
+    return fileMap.empty() ? ecs::NullEntity : fileMap[0];
+}
+
+void Scene::MoveChildToIndex(ecs::Entity child, size_t index) {
+    if (!m_World.IsAlive(child) || !m_World.HasComponent<TransformComponent>(child)) return;
+    ecs::Entity parent = m_World.GetComponent<TransformComponent>(child).parent;
+    if (parent == ecs::NullEntity || !m_World.IsAlive(parent)) return;
+    auto& children = m_World.GetComponent<TransformComponent>(parent).children;
+    auto it = std::find(children.begin(), children.end(), child);
+    if (it == children.end()) return;
+    children.erase(it);
+    if (index > children.size()) index = children.size();
+    children.insert(children.begin() + static_cast<std::ptrdiff_t>(index), child);
+    m_Dirty = true;
+}
+
+
+nlohmann::json Scene::SerializeComponent(ecs::Entity entity, std::string_view key) const {
+    if (!m_World.IsAlive(entity)) return nlohmann::json::object();
+    const std::unordered_map<ecs::Entity, int> fileIds{{entity, 0}};
+    nlohmann::json all = SerializeEntityComponents(m_World, entity, fileIds);
+    const std::string k(key);
+    auto it = all.find(k);
+    if (it == all.end()) return nlohmann::json::object();
+    return *it;   // single-component object, e.g. {"position": ..., ...}
+}
+
+bool Scene::RemoveComponentKey(ecs::Entity entity, std::string_view key) {
+    if (!m_World.IsAlive(entity)) return false;
+    const std::string k(key);
+    if (k == "name" || k == "uuid" || k == "transform") return false;   // entity backbone — never removed
+    ecs::World& world = m_World;
+    if (k == "meshRenderer") world.RemoveComponent<MeshRendererComponent>(entity);
+    else if (k == "lod") world.RemoveComponent<LodComponent>(entity);
+    else if (k == "directionalLight") world.RemoveComponent<DirectionalLightComponent>(entity);
+    else if (k == "pointLight") world.RemoveComponent<PointLightComponent>(entity);
+    else if (k == "camera") world.RemoveComponent<CameraComponent>(entity);
+    else if (k == "rigidbody") world.RemoveComponent<RigidbodyComponent>(entity);
+    else if (k == "boxCollider") world.RemoveComponent<BoxColliderComponent>(entity);
+    else if (k == "audioSource") world.RemoveComponent<AudioSourceComponent>(entity);
+    else if (k == "script") world.RemoveComponent<ScriptComponent>(entity);
+    else if (k == "prefabInstance") world.RemoveComponent<PrefabInstanceComponent>(entity);
+    else return false;
+    m_Dirty = true;
+    return true;
+}
+
+bool Scene::ApplyComponent(ecs::Entity entity, std::string_view key, const nlohmann::json& component) {
+    static const char* kKeys[] = {"name", "uuid", "transform", "meshRenderer", "lod",
+                                  "directionalLight", "pointLight", "camera", "rigidbody",
+                                  "boxCollider", "audioSource", "script", "prefabInstance"};
+    const std::string k(key);
+    bool known = false;
+    for (const char* candidate : kKeys) if (k == candidate) { known = true; break; }
+    if (!known) return false;
+    if (!m_World.IsAlive(entity)) return false;
+
+    nlohmann::json single = nlohmann::json::object();
+    single[k] = component;
+    single[k].erase("parent");   // never rewrite parentage from a clipboard fragment
+    ApplyEntityComponents(m_World, entity, single, /*fileMap=*/{}, /*honorUuid=*/false);
+    m_Dirty = true;
     return true;
 }
 

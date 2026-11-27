@@ -115,6 +115,15 @@ public:
         Notify();
     }
 
+    // Drop the redo branch without touching undo history. Used by the live-coalescing
+    // path in the editor (mutating the top burst command in place must not leave a
+    // stale redo tail behind).
+    void ClearRedo() {
+        if (m_Redo.empty()) return;
+        m_Redo.clear();
+        Notify();
+    }
+
     bool CanUndo() const { return !m_Undo.empty(); }
     bool CanRedo() const { return !m_Redo.empty(); }
     const std::string UndoName() const { return m_Undo.empty() ? std::string() : m_Undo.back()->Name(); }

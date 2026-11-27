@@ -58,7 +58,7 @@ std::string WorkspaceManager::SanitizeName(const std::string& name) {
 
 std::map<std::string, bool> WorkspaceManager::DefaultVisibility() {
     return {{"Hierarchy", true},  {"Inspector", true}, {"Assets", true},
-            {"Profiler", true},  {"Console", true},   {"Viewport Tools", true}};
+            {"Profiler", true},  {"Console", true},   {"History", true}, {"Viewport Tools", true}};
 }
 
 bool WorkspaceManager::SaveAs(const std::string& name, const std::map<std::string, bool>& panelVisibility, std::string* error) {

@@ -17,9 +17,20 @@ add_executable(raven_tests
     test_memory_tracker.cpp
     test_stacktrace.cpp
     test_editor_commands.cpp
-    test_scene_uuid.cpp)
+    test_scene_uuid.cpp
+    test_editor_commands_scene.cpp
+    test_logger.cpp
+    test_asset_operations.cpp
+    test_thumbnails.cpp
+    test_textureremap.cpp
+    test_asset_selection.cpp
+    test_material_editor.cpp
+    ${CMAKE_SOURCE_DIR}/editor/core/AssetOperations.cpp
+    ${CMAKE_SOURCE_DIR}/editor/widgets/ThumbnailGenerator.cpp
+    ${CMAKE_SOURCE_DIR}/editor/core/TextureRemap.cpp
+    ${CMAKE_SOURCE_DIR}/engine/src/assets/TextureNameRules.cpp)
 
-target_include_directories(raven_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/third_party/Vulkan-Headers/include)
+target_include_directories(raven_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/third_party/Vulkan-Headers/include)
 target_link_libraries(raven_tests PRIVATE raven_core)
 target_compile_definitions(raven_tests PRIVATE
     RAVEN_SAMPLE_DIR="${CMAKE_SOURCE_DIR}/sample"

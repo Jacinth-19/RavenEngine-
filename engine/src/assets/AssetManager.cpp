@@ -159,6 +159,22 @@ std::future<AssetManager::LoadResult> AssetManager::LoadAsync(const UUID& uuid) 
     });
 }
 
+std::future<AssetManager::LoadResult> AssetManager::ReloadAsync(const UUID& uuid) {
+    return JobSystem::Instance().Submit([this, uuid]() -> LoadResult {
+        LoadResult result = LoadInternal(uuid, /*forceReimport=*/true);
+        if (!result.ok) return result;
+        {
+            std::lock_guard<std::mutex> lock(m_CacheMutex);
+            m_Cache[result.asset->uuid] = result.asset;  // replace
+        }
+        if (m_GpuUpload) {
+            std::lock_guard<std::mutex> lock(m_PendingMutex);
+            m_PendingUploads.push_back(result.asset);     // renderer swaps resources in-place
+        }
+        return result;
+    });
+}
+
 AssetManager::LoadResult AssetManager::ReloadAsset(const UUID& uuid) {
     LoadResult result = LoadInternal(uuid, /*forceReimport=*/true);
     if (!result.ok) {

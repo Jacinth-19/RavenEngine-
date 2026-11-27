@@ -16,6 +16,7 @@ const char* AssetTypeToString(AssetType type) {
         case AssetType::LuaScript:  return "luaScript";
         case AssetType::Font:       return "font";
         case AssetType::Prefab:     return "prefab";
+        case AssetType::Anim:       return "anim";
         default:                    return "unknown";
     }
 }
@@ -32,6 +33,7 @@ AssetType AssetTypeFromString(const std::string& text) {
     if (s == "luascript") return AssetType::LuaScript;
     if (s == "font") return AssetType::Font;
     if (s == "prefab") return AssetType::Prefab;
+    if (s == "anim") return AssetType::Anim;
     return AssetType::Unknown;
 }
 
@@ -54,8 +56,12 @@ AssetType AssetTypeFromExtension(const std::string& path) {
         return AssetType::Texture;
     if (ext == ".obj")  // glTF/FBX planned (see docs/ROADMAP.md)
         return AssetType::Mesh;
-    if (ext == ".rmat" || ext == ".rmaterial")
+    if (ext == ".rmat" || ext == ".rmaterial" || ext == ".ravenmaterial")
         return AssetType::Material;
+    if (ext == ".ravenshader")
+        return AssetType::Shader;
+    if (ext == ".ravenanim")
+        return AssetType::Anim;
     if (ext == ".wav" || ext == ".ogg" || ext == ".flac" || ext == ".mp3")
         return AssetType::Audio;
     if (ext == ".ravenscene")

@@ -55,6 +55,7 @@ public:
 
     LoadResult LoadImmediate(const UUID& uuid);                 // blocking (editor use)
     std::future<LoadResult> LoadAsync(const UUID& uuid);        // worker-thread import
+    std::future<LoadResult> ReloadAsync(const UUID& uuid);      // worker-thread force-reimport
 
     // Re-import from source, overwrite the artifact and hand a fresh asset to the
     // GPU upload handler (which replaces any previous GPU resource for this UUID).

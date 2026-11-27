@@ -26,6 +26,15 @@
 #include "editor/core/StylePresets.h"
 #include "editor/core/RavenEditorHooks.h"
 #include "editor/panels/Panel.h"
+#include "editor/panels/PanelRegistry.h"
+#include "editor/panels/ProjectPanel.h"
+#include "editor/core/AssetDragDrop.h"
+#include "editor/widgets/ThumbnailCache.h"
+#include "editor/widgets/ImportProgress.h"
+#include "editor/widgets/TextureRemapDialog.h"
+#include "editor/inspectors/ResourceInspector.h"
+#include "editor/selection/EditorSelection.h"
+#include "editor/events/EditorSignals.h"
 
 #include "raven/core/Logger.h"
 #include "raven/assets/AssetManager.h"
@@ -49,9 +58,38 @@ EditorApp::EditorApp(Renderer& renderer, QualityTier tier)
     m_Panels.Register(std::make_unique<editor::CallablePanel>("Viewport Tools", nullptr, [this] { DrawViewportPanel(); }));
     m_Panels.Register(std::make_unique<editor::CallablePanel>("Hierarchy", &m_ShowHierarchy, [this] { DrawHierarchyPanel(); }));
     m_Panels.Register(std::make_unique<editor::CallablePanel>("Inspector", &m_ShowInspector, [this] { DrawInspectorPanel(); }));
-    m_Panels.Register(std::make_unique<editor::CallablePanel>("Assets", &m_ShowAssets, [this] { DrawAssetsPanel(); }));
+    {
+        editor::ProjectPanel::Config ppCfg;
+        ppCfg.openFlag = &m_ShowAssets;
+        ppCfg.assetsDirFn = [this] { return m_AssetsDir; };
+        ppCfg.rescanSecondsFn = [this] { return m_EditorConfig.assetRescanSeconds; };
+        ppCfg.openSceneFn = [this](const std::filesystem::path& absolute) {
+            if (m_Scene.IsDirty()) {
+                std::string saveError;
+                if (m_Scene.Save(&saveError)) RAVEN_LOG_INFO("Editor: auto-saved before switching scene");
+            }
+            std::string loadError;
+            if (m_Scene.Load(absolute, &loadError)) {
+                RAVEN_LOG_INFO("Editor: opened scene %s", absolute.string().c_str());
+                m_ScenePath = absolute;
+                editor::ClearSelection();
+            } else {
+                RAVEN_LOG_ERROR("Editor: cannot open scene: %s", loadError.c_str());
+            }
+        };
+        ppCfg.focusSinkFn = [this](bool focused) { m_AssetPanelHasFocus = focused; };
+        m_Panels.Register(std::make_unique<editor::ProjectPanel>(std::move(ppCfg)));
+    }
     m_Panels.Register(std::make_unique<editor::CallablePanel>("Profiler", &m_ShowProfiler, [this] { DrawProfilerPanel(); }));
     m_Panels.Register(std::make_unique<editor::CallablePanel>("Console", &m_ShowConsole, [this] { DrawConsolePanel(); }));
+    m_Panels.Register(std::make_unique<editor::HistoryPanel>(&m_ShowHistory, [this] { m_Scene.MarkDirty(); }));
+
+    m_FileEventSub = raven::EventBus::Instance().Subscribe<editor::AssetFileChangedSignal>(
+        [this](const editor::AssetFileChangedSignal& signal) {   // note: editor signals live in raven::editor
+            // Watcher thread must not touch the database — queue the event for the main thread.
+            std::lock_guard<std::mutex> lock(m_FileEventMutex);
+            m_FileEvents.push_back({signal.path, static_cast<int>(signal.event)});
+        });
 
     BindEditorAppHooks(this);  // engine hooks forward to this app (InstallEditorHooks in main)
 }
@@ -86,6 +124,17 @@ bool EditorApp::LoadProject(const std::filesystem::path& projectDir, std::string
         RAVEN_LOG_ERROR("Editor: failed to load scene %s: %s", m_ScenePath.string().c_str(), sceneError.c_str());
         return false;   // main decides whether to keep going with an empty scene
     }
+    editor::ThumbnailCache::Instance().Initialize(projectDir, &m_Renderer);
+    if (m_AssetWatcher) { m_AssetWatcher->Stop(); m_AssetWatcher.reset(); }
+    m_AssetWatcher = std::make_unique<raven::FileWatcher>();
+    m_AssetWatcher->AddWatch(m_AssetsDir, true);
+    m_AssetWatcher->SetCallback([](const std::filesystem::path& path, raven::FileEvent event) {
+        editor::AssetFileChangedSignal signal;
+        signal.path = path.string();
+        signal.event = event;
+        raven::EventBus::Instance().Publish(signal);
+    });
+    m_AssetWatcher->Start(500);
     m_ProjectLoaded = true;   // shell usable from here on (scene may still have failed — logged above)
     RAVEN_LOG_INFO("Editor: project '%s' loaded (%zu entities, scene: %s)", m_ProjectName.c_str(),
                    m_Scene.World().Entities().size(), m_ScenePath.filename().string().c_str());
@@ -93,20 +142,32 @@ bool EditorApp::LoadProject(const std::filesystem::path& projectDir, std::string
     // Select the first renderable entity so the gizmo is visible on startup.
     auto roots = m_Scene.RootEntities();
     for (ecs::Entity e : roots) {
-        if (m_Scene.World().HasComponent<MeshRendererComponent>(e)) { m_Selected = e; break; }
+        if (m_Scene.World().HasComponent<MeshRendererComponent>(e)) {
+            editor::SelectOnly(m_Scene.World().GetComponent<UuidComponent>(e).id);
+            break;
+        }
     }
     return true;
 }
 
 void EditorApp::RegisterLogCapture() {
-    Logger::Instance().AddCallback([this](LogLevel level, const std::string& message) {
-        AddLogLine(static_cast<int>(level), message);
+    // §7.3: Logger callback → LogEntrySignal → bus → one drain per frame → console ring.
+    // The editor never sees preformatted text; the entry crosses the bus as a struct.
+    Logger::Instance().AddCallback([this](const raven::LogEntry& entry) {
+        editor::LogEntrySignal signal;
+        signal.level = static_cast<int>(entry.level);
+        signal.channel = entry.channel.empty() ? std::string("General") : entry.channel;
+        signal.text = entry.text;
+        signal.id = ++m_LogSignalId;
+        raven::EventBus::Instance().Publish(std::move(signal));
+    });
+    raven::EventBus::Instance().Subscribe<editor::LogEntrySignal>([this](const editor::LogEntrySignal& signal) {
+        AddLogLine(signal.level, signal.channel, signal.text, signal.id);
     });
 }
 
-void EditorApp::AddLogLine(int level, const std::string& text) {
-    const std::string channel = "General";
-    m_Log.push_back({level, text, channel});
+void EditorApp::AddLogLine(int level, const std::string& channel, const std::string& text, uint64_t id) {
+    m_Log.push_back({level, text, channel, id});
     if (std::find(m_ConsoleChannels.begin(), m_ConsoleChannels.end(), channel) == m_ConsoleChannels.end())
         m_ConsoleChannels.push_back(channel);
     // Fixed 1024-entry ring; oldest lines are dropped in one batch.
@@ -142,9 +203,10 @@ void EditorApp::UpdateOrbitCamera(uint32_t /*width*/, uint32_t /*height*/) {
 }
 
 void EditorApp::FrameSelected() {
-    if (!m_Scene.World().IsAlive(m_Selected)) return;
-    if (!m_Scene.World().HasComponent<TransformComponent>(m_Selected)) return;
-    const glm::mat4 world = m_Scene.GetWorldMatrix(m_Selected);
+    const ecs::Entity target = SelectedEntity();
+    if (target == ecs::NullEntity) return;
+    if (!m_Scene.World().HasComponent<TransformComponent>(target)) return;
+    const glm::mat4 world = m_Scene.GetWorldMatrix(target);
     m_OrbitFocus = glm::vec3(world[3]);
     m_OrbitDistance = 5.0f;
     UpdateOrbitCamera(0, 0);
@@ -176,8 +238,210 @@ ecs::Entity EditorApp::PickEntity(float u, float v, float aspectRatio) const {
 // Frame entry point
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Selection helpers (§5.3) — the singleton stores UUIDs; resolution is O(n) by design.
+// ---------------------------------------------------------------------------
+
+ecs::Entity EditorApp::SelectedEntity() const {
+    const raven::UUID primary = editor::PrimarySelection();
+    if (primary.IsNil()) return ecs::NullEntity;
+    auto found = m_Scene.FindByUUID(primary);
+    return found.value_or(ecs::NullEntity);
+}
+
+std::vector<ecs::Entity> EditorApp::SelectedEntities() const {
+    std::vector<ecs::Entity> out;
+    for (const raven::UUID& id : editor::Selection())
+        if (auto found = m_Scene.FindByUUID(id)) out.push_back(*found);
+    return out;
+}
+
+void EditorApp::SelectOnly(ecs::Entity e) {
+    if (e == ecs::NullEntity || !m_Scene.World().IsAlive(e)) return;
+    editor::SelectOnly(m_Scene.World().GetComponent<UuidComponent>(e).id);
+    m_SpanAnchor = editor::PrimarySelection();
+}
+
+void EditorApp::SelectToggle(ecs::Entity e) {
+    if (e == ecs::NullEntity || !m_Scene.World().IsAlive(e)) return;
+    editor::SelectToggle(m_Scene.World().GetComponent<UuidComponent>(e).id);
+    m_SpanAnchor = editor::PrimarySelection();
+}
+
+void EditorApp::SelectSpan(ecs::Entity e, const std::vector<ecs::Entity>& visibleOrder) {
+    if (e == ecs::NullEntity) return;
+    const raven::UUID target = m_Scene.World().GetComponent<UuidComponent>(e).id;
+    auto uuidOf = [this](ecs::Entity x) { return m_Scene.World().GetComponent<UuidComponent>(x).id; };
+
+    size_t anchorIdx = std::string::npos, targetIdx = std::string::npos;
+    if (!m_SpanAnchor.IsNil()) {
+        for (size_t i = 0; i < visibleOrder.size(); ++i)
+            if (uuidOf(visibleOrder[i]) == m_SpanAnchor) { anchorIdx = i; break; }
+    }
+    for (size_t i = 0; i < visibleOrder.size(); ++i)
+        if (visibleOrder[i] == e) { targetIdx = i; break; }
+    if (targetIdx == std::string::npos) return;
+    if (anchorIdx == std::string::npos) anchorIdx = targetIdx;
+
+    const size_t lo = std::min(anchorIdx, targetIdx), hi = std::max(anchorIdx, targetIdx);
+    std::vector<raven::UUID> ids;
+    ids.reserve(hi - lo + 1);
+    for (size_t i = lo; i <= hi; ++i) ids.push_back(uuidOf(visibleOrder[i]));
+    editor::SetSelection(std::move(ids));
+}
+
+void EditorApp::ToggleLock(raven::UUID id) {
+    auto it = m_LockedEntities.find(id);
+    if (it != m_LockedEntities.end()) m_LockedEntities.erase(it);
+    else m_LockedEntities.insert(id);
+}
+
+void EditorApp::QueuePendingOp(std::function<void()> op) { m_PendingOps.push_back(std::move(op)); }
+
+void EditorApp::ConsumePendingOps() {
+    std::deque<std::function<void()>> pending;
+    pending.swap(m_PendingOps);
+    while (!pending.empty()) {
+        auto op = std::move(pending.front());
+        pending.pop_front();
+        if (op) op();
+    }
+    // A deleted primary selection leaves stale UUIDs behind — prune against the scene.
+    editor::PruneSelection([this](const raven::UUID& id) { return m_Scene.FindByUUID(id).has_value(); });
+}
+
+void EditorApp::RequestDeleteSelection() {
+    QueuePendingOp([this] {
+        const std::vector<raven::UUID> targets = editor::Selection();   // ordered, primary last
+        if (targets.empty()) return;
+        editor::Commands().Raw().BeginCompound("Delete Selection");
+        for (const raven::UUID& id : targets) {
+            if (m_Scene.FindByUUID(id))
+                editor::Commands().Push(std::make_shared<editor::EntityDestroyCommand>(m_Scene, id));
+        }
+        editor::Commands().Raw().EndCompound();
+        editor::ClearSelection();
+        m_Scene.MarkDirty();
+    });
+}
+
+void EditorApp::RequestDuplicate(ecs::Entity e) {
+    if (e == ecs::NullEntity) return;
+    const raven::UUID sourceId = m_Scene.World().GetComponent<UuidComponent>(e).id;
+    QueuePendingOp([this, sourceId] {
+        auto cmd = std::make_shared<editor::EntityDuplicateCommand>(m_Scene, sourceId);
+        editor::Commands().Push(cmd);
+        const raven::UUID created = cmd->CreatedRootUuid();
+        if (!created.IsNil()) editor::SelectOnly(created);
+        m_Scene.MarkDirty();
+    });
+}
+
+void EditorApp::RequestCreateChild(ecs::Entity parent) {
+    const raven::UUID parentUuid = parent != ecs::NullEntity
+        ? m_Scene.World().GetComponent<UuidComponent>(parent).id
+        : raven::UUID::Nil();
+    QueuePendingOp([this, parentUuid] {
+        auto cmd = std::make_shared<editor::EntityCreateCommand>(m_Scene, "Entity", parentUuid);
+        editor::Commands().Push(cmd);
+        editor::SelectOnly(cmd->NewUuid());
+        m_Scene.MarkDirty();
+    });
+}
+
+void EditorApp::RequestRename(raven::UUID id) {
+    if (id.IsNil()) return;
+    auto found = m_Scene.FindByUUID(id);
+    if (!found) return;
+    const std::string current = m_Scene.World().GetComponent<NameComponent>(*found).name;
+    std::snprintf(m_RenameBuf, sizeof(m_RenameBuf), "%s", current.c_str());
+    m_RenameUUID = id;
+    m_RenameFocus = true;
+}
+
+void EditorApp::ProcessAssetFileEvents() {
+    std::vector<AssetFileEvent> events;
+    {
+        std::lock_guard<std::mutex> lock(m_FileEventMutex);
+        events.swap(m_FileEvents);
+    }
+    if (events.empty()) return;
+
+    auto relOf = [this](const std::string& absolute) {
+        std::error_code ec;
+        return std::filesystem::path(absolute).lexically_relative(m_AssetsDir).generic_string();
+    };
+    // .meta sidecars change as an implementation detail of import/rescan — ignore them.
+    auto isMeta = [](const std::string& p) { return p.size() > 5 && p.compare(p.size() - 5, 5, ".meta") == 0; };
+
+    raven::AssetDatabase& db = raven::AssetManager::Instance().Database();
+
+    // Deleted files must be mapped to a UUID BEFORE the rescan drops the entry.
+    struct Resolved { std::string rel; raven::UUID uuid; int event; };
+    std::vector<Resolved> resolved;
+    bool sawCreateOrDelete = false;
+    for (const AssetFileEvent& ev : events) {
+        if (isMeta(ev.path)) continue;
+        const std::string rel = relOf(ev.path);
+        if (rel.empty() || rel.rfind("..", 0) == 0) continue;
+        raven::UUID uuid;
+        if (const auto* entry = db.FindByPath(rel)) uuid = entry->uuid;
+        resolved.push_back({rel, uuid, ev.event});
+        sawCreateOrDelete = sawCreateOrDelete || ev.event == static_cast<int>(raven::FileEvent::Created) ||
+                            ev.event == static_cast<int>(raven::FileEvent::Deleted);
+    }
+    if (sawCreateOrDelete) {
+        std::string scanError;
+        if (!db.Rescan(&scanError)) RAVEN_LOG_WARN("Editor: asset database rescan failed: %s", scanError.c_str());
+    }
+
+    for (const Resolved& r : resolved) {
+        const auto fileEvent = static_cast<raven::FileEvent>(r.event);
+        switch (fileEvent) {
+            case raven::FileEvent::Created: {
+                const auto* entry = db.FindByPath(r.rel);
+                if (!entry || entry->uuid.IsNil()) break;
+                editor::AssetChangedSignal signal;
+                signal.asset = entry->uuid;
+                signal.kind = raven::AssetReloadKind::Added;
+                raven::EventBus::Instance().Publish(signal);
+                break;
+            }
+            case raven::FileEvent::Modified: {
+                const auto* entry = db.FindByPath(r.rel);
+                if (!entry || entry->uuid.IsNil()) break;   // unknown (not an imported asset type)
+                raven::AssetManager::Instance().ReloadAsset(entry->uuid);
+                editor::AssetChangedSignal signal;
+                signal.asset = entry->uuid;
+                signal.kind = raven::AssetReloadKind::Modified;
+                raven::EventBus::Instance().Publish(signal);
+                break;
+            }
+            case raven::FileEvent::Deleted: {
+                if (r.uuid.IsNil()) break;   // never made it into the DB; nothing to orphan-notify
+                // (the rescan above already pruned the entry)
+                editor::AssetChangedSignal signal;
+                signal.asset = r.uuid;
+                signal.kind = raven::AssetReloadKind::Removed;
+                raven::EventBus::Instance().Publish(signal);
+                break;
+            }
+        }
+    }
+}
+
 void EditorApp::OnFrame(float deltaSeconds) {
-    (void)deltaSeconds;
+    // Layout persistence (last session restore + pending workspace loads) happens at
+    // the very top of the frame, before any ImGui window exists.
+    RestoreLastSession();
+    ApplyPendingWorkspace();
+    ConsumePendingOps();
+    editor::Commands().DrainDebounce(deltaSeconds);
+    editor::Commands().DrainLiveBursts(deltaSeconds);
+    raven::EventBus::Instance().Drain();   // console + future subscribers see this frame's signals
+    editor::ThumbnailCache::Instance().DrainCompletions();   // thumbnail bakes land each frame
+    editor::ImportProgress::Instance().Drain();             // async imports retire here
+    ProcessAssetFileEvents();                               // watcher events: rescan/reload/signal
 
     // Layout persistence (last session restore + pending workspace loads) happens at
     // the very top of the frame, before any ImGui window exists.
@@ -195,25 +459,29 @@ void EditorApp::OnFrame(float deltaSeconds) {
 
     // Keyboard shortcuts (when not typing into a field).
     if (!io.WantTextInput) {
-        const bool hasSel = m_Scene.World().IsAlive(m_Selected);
+        const ecs::Entity primary = SelectedEntity();
+        const bool hasSel = primary != ecs::NullEntity;
         if (ImGui::IsKeyPressed(ImGuiKey_F, false)) FrameSelected();
         if (ImGui::IsKeyPressed(ImGuiKey_W, false)) m_GizmoOperation = 0;
         if (ImGui::IsKeyPressed(ImGuiKey_E, false)) m_GizmoOperation = 1;
         if (ImGui::IsKeyPressed(ImGuiKey_R, false)) m_GizmoOperation = 2;
-        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) m_Selected = ecs::NullEntity;
-        if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) && hasSel) {
-            m_DeleteList.push_back(m_Selected);
-            m_Selected = ecs::NullEntity;
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) editor::ClearSelection();
+        if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) && hasSel && !m_AssetPanelHasFocus) RequestDeleteSelection();
+        if (ImGui::IsKeyPressed(ImGuiKey_F2, false) && hasSel && !m_AssetPanelHasFocus)
+            RequestRename(m_Scene.World().GetComponent<UuidComponent>(primary).id);
+        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
+            const bool applied = io.KeyShift ? editor::Commands().Raw().Redo() : editor::Commands().Raw().Undo();   // Ctrl+Shift+Z == redo
+            if (applied) m_Scene.MarkDirty();
+        }
+        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
+            if (editor::Commands().Raw().Redo()) m_Scene.MarkDirty();
         }
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
             std::string saveError;
             if (m_Scene.Save(&saveError)) RAVEN_LOG_INFO("Editor: saved scene %s", m_ScenePath.string().c_str());
             else RAVEN_LOG_ERROR("Editor: save failed: %s", saveError.c_str());
         }
-        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D, false) && hasSel) {
-            m_Selected = m_Scene.DuplicateEntity(m_Selected);
-            m_Scene.MarkDirty();
-        }
+        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D, false) && hasSel && !m_AssetPanelHasFocus) RequestDuplicate(primary);
     }
 
     // Autosave (opt-in via Settings): throttled scene snapshot; the user's scene
@@ -254,6 +522,7 @@ void EditorApp::OnFrame(float deltaSeconds) {
         ImGui::DockBuilderDockWindow("Console", bottom);
         ImGui::DockBuilderDockWindow("Profiler", bottom);
         ImGui::DockBuilderDockWindow("Assets", bottom);
+        ImGui::DockBuilderDockWindow("History", bottom);
         ImGui::DockBuilderFinish(dockspaceId);
     }
 
@@ -267,17 +536,17 @@ void EditorApp::OnFrame(float deltaSeconds) {
     DrawAboutModal();
     DrawSettingsWindow();
     DrawWorkspacePopups();
+    editor::ImportProgress::Instance().Draw();   // transient import toast (top-right)
+    editor::TextureRemapDialog::Instance().Draw();   // modal — no-op unless open
 
-    // Deferred deletions (safe outside ImGui iteration).
-    for (ecs::Entity e : m_DeleteList) {
-        if (m_Scene.World().IsAlive(e)) m_Scene.DestroyEntity(e);
-        if (m_Selected == e) m_Selected = ecs::NullEntity;
-        m_Scene.MarkDirty();
-    }
-    m_DeleteList.clear();
+    // (Scene mutations from this frame were consumed at the top via ConsumePendingOps.)
 }
 
 void EditorApp::Shutdown() {
+    if (m_AssetWatcher) { m_AssetWatcher->Stop(); m_AssetWatcher.reset(); }
+    if (m_FileEventSub != 0) { raven::EventBus::Instance().Unsubscribe(m_FileEventSub); m_FileEventSub = 0; }
+    editor::ImportProgress::Instance().Shutdown();   // drop pending import jobs
+    editor::ThumbnailCache::Instance().Shutdown();   // drop ImGui descriptors before backend teardown
     PersistLastSession();
     BindEditorAppHooks(nullptr);
     m_Log.clear();
@@ -302,7 +571,7 @@ void EditorApp::DrawMenuBar() {
                 if (m_Scene.Save(&saveError)) RAVEN_LOG_INFO("Editor: auto-saved before reload");
             }
             std::string loadError;
-            if (m_Scene.Load(m_ScenePath, &loadError)) { RAVEN_LOG_INFO("Editor: scene reloaded"); m_Selected = ecs::NullEntity; }
+            if (m_Scene.Load(m_ScenePath, &loadError)) { RAVEN_LOG_INFO("Editor: scene reloaded"); editor::ClearSelection(); }
             else RAVEN_LOG_ERROR("Editor: reload failed: %s", loadError.c_str());
         }
         ImGui::Separator();
@@ -315,19 +584,11 @@ void EditorApp::DrawMenuBar() {
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Entity")) {
-        if (ImGui::MenuItem(ICON_ADD "\tCreate Empty Entity")) {
-            m_Selected = m_Scene.CreateEntity("Entity");
-            m_Scene.MarkDirty();
-        }
-        const bool hasSel = m_Scene.World().IsAlive(m_Selected);
-        if (ImGui::MenuItem(ICON_COPY "\tDuplicate Selected\tCtrl+D", nullptr, false, hasSel)) {
-            m_Selected = m_Scene.DuplicateEntity(m_Selected);
-            m_Scene.MarkDirty();
-        }
-        if (ImGui::MenuItem(ICON_DELETE "\tDelete Selected\tDel", nullptr, false, hasSel)) {
-            m_DeleteList.push_back(m_Selected);
-            m_Selected = ecs::NullEntity;
-        }
+        if (ImGui::MenuItem(ICON_ADD "\tCreate Empty Entity")) RequestCreateChild(ecs::NullEntity);
+        const ecs::Entity primary = SelectedEntity();
+        const bool hasSel = primary != ecs::NullEntity;
+        if (ImGui::MenuItem(ICON_COPY "\tDuplicate Selected\tCtrl+D", nullptr, false, hasSel)) RequestDuplicate(primary);
+        if (ImGui::MenuItem(ICON_DELETE "\tDelete Selected\tDel", nullptr, false, hasSel)) RequestDeleteSelection();
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Edit")) {
@@ -369,6 +630,13 @@ void EditorApp::DrawMenuBar() {
             if (ImGui::MenuItem("Default Light", nullptr, m_EditorConfig.theme == "light")) ApplyThemeAndPersist("light");
             ImGui::EndMenu();
         }
+        ImGui::Separator();
+        ImGui::MenuItem(ICON_PANEL_HIERARCHY "\tHierarchy", nullptr, &m_ShowHierarchy);
+        ImGui::MenuItem(ICON_PANEL_INSPECTOR "\tInspector", nullptr, &m_ShowInspector);
+        ImGui::MenuItem(ICON_PANEL_CONSOLE "\tConsole", nullptr, &m_ShowConsole);
+        ImGui::MenuItem(ICON_PANEL_PROFILER "\tProfiler", nullptr, &m_ShowProfiler);
+        ImGui::MenuItem(ICON_PANEL_ASSETS "\tAssets", nullptr, &m_ShowAssets);
+        ImGui::MenuItem(ICON_HISTORY "\tHistory", nullptr, &m_ShowHistory);
         if (ImGui::MenuItem(ICON_SETTINGS "\tSettings…")) m_ShowSettings = true;
         ImGui::EndMenu();
     }
@@ -423,6 +691,19 @@ void EditorApp::DrawViewportPanel() {
         if (ImGui::Button((std::string(gizmoOps[op]) + "##gizmoOp" + std::to_string(op)).c_str(), toolButton)) m_GizmoOperation = op;
         if (active) ImGui::PopStyleColor();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", gizmoTooltips[op]);
+        ImGui::SameLine();
+    }
+    {
+        raven::CommandStack& undoStack = editor::Commands().Raw();
+        ImGui::BeginDisabled(!undoStack.CanUndo());
+        if (ImGui::Button(ICON_UNDO "##undoToolbar", toolButton)) { if (undoStack.Undo()) m_Scene.MarkDirty(); }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered() && undoStack.CanUndo()) ImGui::SetTooltip("Undo: %s (Ctrl+Z)", undoStack.UndoName().c_str());
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!undoStack.CanRedo());
+        if (ImGui::Button(ICON_REDO "##redoToolbar", toolButton)) { if (undoStack.Redo()) m_Scene.MarkDirty(); }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered() && undoStack.CanRedo()) ImGui::SetTooltip("Redo: %s (Ctrl+Y)", undoStack.RedoName().c_str());
         ImGui::SameLine();
     }
     if (ImGui::Checkbox(ICON_SNAP " Snap", &m_GizmoSnap)) {}
@@ -485,7 +766,10 @@ void EditorApp::HandleViewportInput(const ImVec2& viewportMin, const ImVec2& vie
             const float v = mouse.y / fullExtent.y;
             const float aspect = fullExtent.x / fullExtent.y;
             const ecs::Entity picked = PickEntity(u, v, aspect);
-            if (picked != ecs::NullEntity) m_Selected = picked;
+            if (picked != ecs::NullEntity) {
+                const raven::UUID pickedId = m_Scene.World().GetComponent<UuidComponent>(picked).id;
+                if (!IsLocked(pickedId)) editor::SelectOnly(pickedId);
+            }
         }
         draggingOrbit = false;
     }
@@ -512,8 +796,11 @@ void EditorApp::HandleViewportInput(const ImVec2& viewportMin, const ImVec2& vie
 }
 
 void EditorApp::DrawGizmo(const ImVec2& fullExtent, float aspectRatio) {
-    if (m_Selected == ecs::NullEntity || !m_Scene.World().IsAlive(m_Selected)) return;
-    if (!m_Scene.World().HasComponent<TransformComponent>(m_Selected)) return;
+    const ecs::Entity target = SelectedEntity();
+    if (target == ecs::NullEntity) return;
+    const raven::UUID targetId = m_Scene.World().GetComponent<UuidComponent>(target).id;
+    if (IsLocked(targetId)) return;   // locked rows skip the gizmo (§5.4)
+    if (!m_Scene.World().HasComponent<TransformComponent>(target)) return;
 
     ImGuizmo::BeginFrame();
     ImGuizmo::SetOrthographic(false);
@@ -523,8 +810,8 @@ void EditorApp::DrawGizmo(const ImVec2& fullExtent, float aspectRatio) {
     glm::mat4 view = m_Camera.ViewMatrix();
     glm::mat4 proj = m_Camera.ProjectionMatrix(aspectRatio);
 
-    const auto& t = m_Scene.World().GetComponent<TransformComponent>(m_Selected);
-    const glm::mat4 parentWorld = t.parent != ecs::NullEntity && t.parent != m_Selected
+    const auto& t = m_Scene.World().GetComponent<TransformComponent>(target);
+    const glm::mat4 parentWorld = t.parent != ecs::NullEntity && t.parent != target
         ? m_Scene.GetWorldMatrix(t.parent)
         : glm::mat4(1.0f);
     glm::mat4 world = parentWorld * m_Scene.GetLocalMatrix(t);
@@ -533,22 +820,33 @@ void EditorApp::DrawGizmo(const ImVec2& fullExtent, float aspectRatio) {
                            : m_GizmoOperation == 1 ? ImGuizmo::ROTATE : ImGuizmo::SCALE;
     const float snapValues[3] = {0.5f, 15.0f, 0.1f};
 
+    static editor::TransformSnapshot s_GizmoBefore;   // captured when the drag starts
+    static bool s_GizmoGesture = false;
+    const bool usingGizmo = ImGuizmo::IsUsing();
+
     if (ImGuizmo::Manipulate(&view[0][0], &proj[0][0], op,
                              m_GizmoLocal ? ImGuizmo::LOCAL : ImGuizmo::WORLD,
                              &world[0][0], nullptr, m_GizmoSnap ? snapValues : nullptr)) {
         const glm::mat4 local = glm::inverse(parentWorld) * world;
         float translation[3], rotationDeg[3], scale[3];
         ImGuizmo::DecomposeMatrixToComponents(&local[0][0], translation, rotationDeg, scale);
-        auto& transform = m_Scene.World().GetComponent<TransformComponent>(m_Selected);
-        transform.position = glm::vec3(translation[0], translation[1], translation[2]);
-        transform.rotation = glm::radians(glm::vec3(rotationDeg[0], rotationDeg[1], rotationDeg[2]));
-        transform.scale = glm::vec3(scale[0], scale[1], scale[2]);
-        m_Scene.MarkDirty();
+        editor::TransformSnapshot after{glm::vec3(translation[0], translation[1], translation[2]),
+                                        glm::radians(glm::vec3(rotationDeg[0], rotationDeg[1], rotationDeg[2])),
+                                        glm::vec3(scale[0], scale[1], scale[2])};
+        if (!s_GizmoGesture) {
+            s_GizmoBefore = editor::TransformSnapshot{t.position, t.rotation, t.scale};
+            s_GizmoGesture = true;
+        }
+        // Live-apply + coalesce: one undo entry per drag gesture, viewport stays live.
+        editor::Commands().PushCoalesced("gizmo:" + targetId.ToString(),
+                                         std::make_shared<editor::GizmoTransformCommand>(m_Scene, targetId, s_GizmoBefore, after));
+    } else if (!usingGizmo && s_GizmoGesture) {
+        s_GizmoGesture = false;   // gesture ended — next drag captures a fresh before-state
     }
 }
 
 // ---------------------------------------------------------------------------
-// Hierarchy panel
+// Hierarchy panel (§5.4) — multi-select, filter, drag-drop, context menu, deferred ops
 // ---------------------------------------------------------------------------
 
 // Editor row glyph for an entity, picked from its first "interesting" component.
@@ -563,143 +861,329 @@ const char* EntityTypeGlyph(const ecs::World& world, ecs::Entity e) {
     return ICON_ENTITY_GENERIC;
 }
 
-void EditorApp::DrawEntityNode(ecs::Entity e) {
-    auto& world = m_Scene.World();
+namespace {
+struct HierarchyFilter {
+    std::string needle;                 // lowercased substring; empty = no filter
+    std::unordered_set<raven::UUID, raven::UUIDHash> keep;   // matches + their ancestors (subtree shown)
+};
+
+bool HierarchyNodeVisible(const HierarchyFilter& filter, raven::UUID id) {
+    return filter.needle.empty() || filter.keep.find(id) != filter.keep.end();
+}
+
+// Case-insensitive substring match used for the filter; memoized per call site.
+std::string HierarchyLower(const std::string& in) {
+    std::string out = in;
+    std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return out;
+}
+
+// Walk the tree and collect matches + ancestors into `keep`. Returns true if this
+// node or any descendant matches (i.e. the node must stay visible).
+bool HierarchyCollect(Scene& scene, ecs::Entity e, const std::string& needleLower, std::unordered_set<raven::UUID, raven::UUIDHash>& keep) {
+    auto& world = scene.World();
+    const raven::UUID id = world.GetComponent<UuidComponent>(e).id;
     const std::string name = world.HasComponent<NameComponent>(e) ? world.GetComponent<NameComponent>(e).name
                                                                   : ("Entity " + std::to_string(static_cast<uint32_t>(e)));
-    const auto& children = m_Scene.ChildrenOf(e);
+    bool any = HierarchyLower(name).find(needleLower) != std::string::npos;
+    for (ecs::Entity child : scene.ChildrenOf(e)) any = HierarchyCollect(scene, child, needleLower, keep) || any;
+    if (any) keep.insert(id);
+    return any;
+}
+} // namespace
+
+void EditorApp::InstantiateModelDrop(const raven::editor::AssetUuidPayload& payload, const raven::UUID& parentUuid) {
+    if (payload.Type() != raven::AssetType::Mesh) {
+        RAVEN_LOG_WARN("Editor: drop ignored — only Mesh assets can be instantiated (got %s)", raven::AssetTypeToString(payload.Type()));
+        return;
+    }
+    std::string base = "Mesh";
+    if (raven::AssetManager::Instance().IsInitialized()) {
+        if (const auto* entry = raven::AssetManager::Instance().Database().FindByUUID(payload.Uuid()))
+            base = std::filesystem::path(entry->relativePath).stem().string();
+    }
+    const raven::UUID meshUuid = payload.Uuid();
+    QueuePendingOp([this, meshUuid, parentUuid, base] {
+        editor::Commands().Raw().BeginCompound("Instantiate Model");
+        auto createCmd = std::make_shared<editor::EntityCreateCommand>(m_Scene, base, parentUuid);
+        editor::Commands().Push(createCmd);
+        const raven::UUID newId = createCmd->NewUuid();
+        raven::MeshRendererComponent mrc;
+        mrc.mesh = meshUuid;
+        editor::Commands().Push(std::make_shared<editor::ComponentAddCommand<raven::MeshRendererComponent>>(m_Scene, newId, mrc, "Mesh Renderer"));
+        editor::Commands().Raw().EndCompound();
+        editor::SelectOnly(newId);
+        m_Scene.MarkDirty();
+    });
+}
+
+void EditorApp::DrawEntityNode(ecs::Entity e) {
+    auto& world = m_Scene.World();
+    const raven::UUID uuid = world.GetComponent<UuidComponent>(e).id;
+
+    // Filter: hide rows outside the match set (matches + their ancestors stay visible).
+    const std::string filterNeedle = HierarchyLower(m_HierarchyFilterBuf);
+    if (!filterNeedle.empty() && m_HierFilterKeep.find(uuid) == m_HierFilterKeep.end()) return;
+
+    const std::string name = world.HasComponent<NameComponent>(e) ? world.GetComponent<NameComponent>(e).name
+                                                                  : ("Entity " + std::to_string(static_cast<uint32_t>(e)));
+    const std::vector<ecs::Entity>& children = m_Scene.ChildrenOf(e);
     const char* typeGlyph = EntityTypeGlyph(world, e);
+    const bool locked = IsLocked(uuid);
 
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
     if (children.empty()) flags |= ImGuiTreeNodeFlags_Leaf;
-    if (e == m_Selected) flags |= ImGuiTreeNodeFlags_Selected;
+    if (editor::IsSelected(uuid)) flags |= ImGuiTreeNodeFlags_Selected;
+    if (!filterNeedle.empty()) flags |= ImGuiTreeNodeFlags_DefaultOpen;   // reveal matches + ancestors
 
-    const std::string label = std::string(typeGlyph) + "  " + name;
-    const bool open = ImGui::TreeNodeEx(reinterpret_cast<void*>(static_cast<uintptr_t>(e) + 1), flags, "%s", label.c_str());
-    if (ImGui::IsItemClicked()) m_Selected = e;
+    // Inline rename mode (F2): the row swaps the tree label for an InputText.
+    const bool renaming = (m_RenameUUID == uuid);
+    const std::string nodeId = std::string(typeGlyph) + "##entity-" + uuid.ToString();
+    ImGui::PushID(uuid.ToString().c_str());
 
-    // Per-row renderer visibility toggle.
-    if (world.HasComponent<MeshRendererComponent>(e)) {
-        ImGui::SameLine(ImGui::GetContentRegionMax().x - 24.0f);
-        auto& mr = world.GetComponent<MeshRendererComponent>(e);
-        if (ImGui::Checkbox(("##vis" + std::to_string(static_cast<uint32_t>(e))).c_str(), &mr.visible)) {
-            m_Scene.MarkDirty();
+    bool open = false;
+    if (renaming) {
+        if (m_RenameFocus) { ImGui::SetKeyboardFocusHere(); m_RenameFocus = false; }
+        flags |= ImGuiTreeNodeFlags_Selected;
+        // Label-less tree node so the tree layout (indent, arrows) is preserved.
+        open = ImGui::TreeNodeEx(nodeId.c_str(), flags, "%s", " ");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(-1.0f);
+        const bool commit = ImGui::InputText("##rename", m_RenameBuf, sizeof(m_RenameBuf),
+                                             ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+        const bool cancel = ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+        if (commit || ImGui::IsItemDeactivatedAfterEdit()) {
+            const std::string newName = m_RenameBuf;
+            if (!newName.empty() && newName != name) {
+                const raven::UUID id = uuid;
+                QueuePendingOp([this, id, newName] {
+                    editor::Commands().Push(std::make_shared<editor::EntityRenameCommand>(m_Scene, id, newName));
+                    m_Scene.MarkDirty();
+                });
+            }
+            m_RenameUUID = raven::UUID::Nil();
+        } else if (cancel) {
+            m_RenameUUID = raven::UUID::Nil();
         }
+    } else {
+        const std::string label = std::string(typeGlyph) + "  " + name;
+        open = ImGui::TreeNodeEx(nodeId.c_str(), flags, "%s", label.c_str());
+    }
+
+    m_VisibleRowOrder.push_back(e);   // visible order cache (span selection + drag)
+
+    // Selection / span anchor on click.
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+        const ImGuiIO& io = ImGui::GetIO();
+        if (io.KeyCtrl) SelectToggle(e);
+        else if (io.KeyShift) SelectSpan(e, m_VisibleRowOrder);
+        else SelectOnly(e);
+    }
+    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) FrameSelected();
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+        if (!editor::IsSelected(uuid)) SelectOnly(e);   // right-click focuses the row like other editors
+        ImGui::OpenPopup("entityContext");
+    }
+
+    // Drag source: move the dragged row; drag the whole selection if the row is inside it.
+    if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+        std::vector<raven::UUID> dragged;
+        if (editor::IsSelected(uuid) && editor::SelectionCount() > 1) dragged = editor::Selection();
+        else dragged = {uuid};
+        nlohmann::json payload = nlohmann::json::array();
+        for (const raven::UUID& id : dragged) payload.push_back(id.ToString());
+        const std::string payloadStr = payload.dump();
+        ImGui::SetDragDropPayload("RAVEN_ENTITY", payloadStr.c_str(), payloadStr.size() + 1);
+        ImGui::Text("%zu entit%s", dragged.size(), dragged.size() == 1 ? "y" : "ies");
+        ImGui::EndDragDropSource();
+    }
+    // Drop target: reparent onto this row (cycles rejected by the command).
+    if (ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* drop = ImGui::AcceptDragDropPayload("RAVEN_ENTITY", ImGuiDragDropFlags_AcceptBeforeDelivery)) {
+            const std::string payloadStr(static_cast<const char*>(drop->Data), drop->DataSize);
+            auto parsed = nlohmann::json::parse(payloadStr, nullptr, /*allow_exceptions=*/false);
+            if (parsed.is_array()) {
+                std::vector<raven::UUID> dragged;
+                for (const auto& item : parsed) {
+                    if (auto id = raven::UUID::Parse(item.is_string() ? item.get<std::string>() : ""))
+                        dragged.push_back(*id);
+                }
+                const raven::UUID targetId = uuid;
+                QueuePendingOp([this, dragged, targetId] {
+                    for (const raven::UUID& id : dragged) {
+                        if (id == targetId) continue;
+                        editor::Commands().Push(std::make_shared<editor::EntityReparentCommand>(m_Scene, id, targetId));
+                    }
+                    m_Scene.MarkDirty();
+                });
+            }
+        } else if (const ImGuiPayload* drop = ImGui::AcceptDragDropPayload(editor::kAssetUuidPayloadType, ImGuiDragDropFlags_AcceptBeforeDelivery)) {
+            if (drop->DataSize == sizeof(editor::AssetUuidPayload)) {
+                editor::AssetUuidPayload payload{};
+                std::memcpy(&payload, drop->Data, sizeof(payload));
+                InstantiateModelDrop(payload, uuid);   // parent = the dropped-on entity
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+
+    // Row context menu — actions are queued as deferred ops (never run inside ImGui iteration).
+    if (ImGui::BeginPopup("entityContext")) {
+        const raven::UUID id = uuid;
+        if (ImGui::MenuItem(ICON_ADD " Create Empty Child")) RequestCreateChild(e);
+        if (ImGui::MenuItem(ICON_COPY " Duplicate\tCtrl+D")) RequestDuplicate(e);
+        if (ImGui::MenuItem("Rename\tF2")) RequestRename(id);
+        ImGui::Separator();
+        if (ImGui::MenuItem(ICON_DELETE " Delete\tDel")) RequestDeleteSelection();
+        ImGui::EndPopup();
+    }
+
+    // Right-aligned row widgets: script-enable checkbox | visibility eye | lock.
+    const float rightEdge = ImGui::GetContentRegionMax().x;
+    float cursorX = rightEdge;
+    const float rowY = ImGui::GetItemRectMin().y + 1.0f;
+
+    // Lock (all rows): skips gizmo + picking.
+    cursorX -= 18.0f;
+    ImGui::SetCursorScreenPos(ImVec2(cursorX, rowY));
+    ImGui::PushID("lock");
+    if (ImGui::SmallButton(locked ? ICON_ROW_LOCK : ICON_ROW_UNLOCK)) ToggleLock(uuid);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip(locked ? "Unlock entity" : "Lock entity (skip gizmo + picking)");
+    ImGui::PopID();
+
+    // Eye toggle (only rows with a MeshRenderer).
+    if (world.HasComponent<MeshRendererComponent>(e)) {
+        auto& mr = world.GetComponent<MeshRendererComponent>(e);
+        cursorX -= 22.0f;
+        ImGui::SetCursorScreenPos(ImVec2(cursorX, rowY));
+        ImGui::PushID("vis");
+        const std::string eyeLabel = std::string(mr.visible ? ICON_ROW_EYE : ICON_ROW_EYE_OFF) + "##eye";
+        if (ImGui::SmallButton(eyeLabel.c_str())) {
+            const raven::UUID id = uuid;
+            const bool newVisible = !mr.visible;
+            QueuePendingOp([this, id, newVisible] {
+                editor::Commands().Push(editor::MakePropertyCommand(m_Scene, id, &MeshRendererComponent::visible, newVisible, "Toggle Visibility"));
+                m_Scene.MarkDirty();
+            });
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip(mr.visible ? "Hide mesh renderer" : "Show mesh renderer");
+        ImGui::PopID();
+    }
+
+    // Script enable checkbox (rows with a ScriptComponent).
+    if (world.HasComponent<ScriptComponent>(e)) {
+        const auto& sc = world.GetComponent<ScriptComponent>(e);
+        cursorX -= 22.0f;
+        ImGui::SetCursorScreenPos(ImVec2(cursorX, rowY));
+        ImGui::PushID("script");
+        bool enabled = sc.enabled;
+        if (ImGui::Checkbox("##scriptEnabled", &enabled)) {
+            const raven::UUID id = uuid;
+            QueuePendingOp([this, id, enabled] {
+                editor::Commands().Push(editor::MakePropertyCommand(m_Scene, id, &ScriptComponent::enabled, enabled, "Toggle Script"));
+                m_Scene.MarkDirty();
+            });
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip(enabled ? "Disable script" : "Enable script");
+        ImGui::PopID();
     }
 
     if (open) {
         for (ecs::Entity child : children) DrawEntityNode(child);
         ImGui::TreePop();
     }
+    ImGui::PopID();
 }
 
 void EditorApp::DrawHierarchyPanel() {
     if (!ImGui::Begin("Hierarchy", &m_ShowHierarchy)) { ImGui::End(); return; }
 
-    if (ImGui::SmallButton(ICON_ADD " Add##addEntity")) {
-        m_Selected = m_Scene.CreateEntity("Entity");
-        m_Scene.MarkDirty();
-    }
+    // Rebuild the filter match set for this frame.
+    m_HierFilterKeep.clear();
+    const std::string filterNeedle = HierarchyLower(m_HierarchyFilterBuf);
+    const auto roots = m_Scene.RootEntities();
+    if (!filterNeedle.empty())
+        for (ecs::Entity root : roots) HierarchyCollect(m_Scene, root, filterNeedle, m_HierFilterKeep);
+
+    // Toolbar: create / duplicate / delete.
+    if (ImGui::SmallButton(ICON_ADD " Add##addEntity")) RequestCreateChild(ecs::NullEntity);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Create empty entity");
     ImGui::SameLine();
-    if (ImGui::SmallButton(ICON_COPY " Duplicate##dupEntity") && m_Selected != ecs::NullEntity) {
-        m_Selected = m_Scene.DuplicateEntity(m_Selected);
-        m_Scene.MarkDirty();
-    }
+    if (ImGui::SmallButton(ICON_COPY " Duplicate##dupEntity") && SelectedEntity() != ecs::NullEntity)
+        RequestDuplicate(SelectedEntity());
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Duplicate selected (Ctrl+D)");
     ImGui::SameLine();
-    if (ImGui::SmallButton(ICON_DELETE " Delete##delEntity") && m_Selected != ecs::NullEntity) {
-        m_DeleteList.push_back(m_Selected);
-        m_Selected = ecs::NullEntity;
-    }
+    if (ImGui::SmallButton(ICON_DELETE " Delete##delEntity") && SelectedEntity() != ecs::NullEntity)
+        RequestDeleteSelection();
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Delete selected (Del)");
+
+    // Substring filter.
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##hierarchyFilter", "filter…", m_HierarchyFilterBuf, sizeof(m_HierarchyFilterBuf));
     ImGui::Separator();
 
-    const auto roots = m_Scene.RootEntities();
+    // Pseudo-root drop target: drop entities here to detach them to the scene root.
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.62f, 0.68f, 0.76f, 1.0f));
+    ImGui::TextUnformatted(ICON_PANEL_HIERARCHY "  Scene Root");
+    ImGui::PopStyleColor();
+    if (ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* drop = ImGui::AcceptDragDropPayload("RAVEN_ENTITY", ImGuiDragDropFlags_AcceptBeforeDelivery)) {
+            const std::string payloadStr(static_cast<const char*>(drop->Data), drop->DataSize);
+            auto parsed = nlohmann::json::parse(payloadStr, nullptr, false);
+            if (parsed.is_array()) {
+                std::vector<raven::UUID> dragged;
+                for (const auto& item : parsed)
+                    if (auto id = raven::UUID::Parse(item.is_string() ? item.get<std::string>() : "")) dragged.push_back(*id);
+                QueuePendingOp([this, dragged] {
+                    for (const raven::UUID& id : dragged)
+                        editor::Commands().Push(std::make_shared<editor::EntityReparentCommand>(m_Scene, id, raven::UUID::Nil()));
+                    m_Scene.MarkDirty();
+                });
+            }
+        } else if (const ImGuiPayload* drop = ImGui::AcceptDragDropPayload(editor::kAssetUuidPayloadType, ImGuiDragDropFlags_AcceptBeforeDelivery)) {
+            if (drop->DataSize == sizeof(editor::AssetUuidPayload)) {
+                editor::AssetUuidPayload payload{};
+                std::memcpy(&payload, drop->Data, sizeof(payload));
+                InstantiateModelDrop(payload, raven::UUID::Nil());   // parent = scene root
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+
+    m_VisibleRowOrder.clear();
     for (ecs::Entity root : roots) DrawEntityNode(root);
 
     // Click empty space to deselect.
     const ImVec2 winPos = ImGui::GetWindowPos();
     const ImVec2 winSize = ImGui::GetWindowSize();
     if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
-        ImGui::IsMouseHoveringRect(winPos, ImVec2(winPos.x + winSize.x, winPos.y + winSize.y))) {
-        if (!ImGui::IsAnyItemHovered()) m_Selected = ecs::NullEntity;
-        (void)0;
+        ImGui::IsMouseHoveringRect(winPos, ImVec2(winPos.x + winSize.x, winPos.y + winSize.y)) &&
+        !ImGui::IsAnyItemHovered()) {
+        editor::ClearSelection();
     }
+
+    // Footer: selection count.
+    const size_t count = editor::SelectionCount();
+    ImGui::Separator();
+    if (count == 0) ImGui::TextDisabled("No selection");
+    else ImGui::TextDisabled("%zu selected", count);
     ImGui::End();
 }
 
 // ---------------------------------------------------------------------------
-// Inspector panel
+// Inspector panel (§6.3) — breadcrumb + registry-driven sections + MultiEdit
 // ---------------------------------------------------------------------------
-
-void EditorApp::DrawTransformSection(TransformComponent& t, ecs::Entity e) {
-    (void)e;
-    if (!ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) return;
-
-    bool dirty = false;
-    dirty |= ImGui::DragFloat3("Position", &t.position.x, 0.05f);
-    glm::vec3 rotDeg = glm::degrees(t.rotation);
-    if (ImGui::DragFloat3("Rotation", &rotDeg.x, 0.5f)) {
-        t.rotation = glm::radians(rotDeg);
-        dirty = true;
-    }
-    dirty |= ImGui::DragFloat3("Scale", &t.scale.x, 0.02f, 0.001f, 1000.0f);
-    if (dirty) m_Scene.MarkDirty();
-}
-
-void EditorApp::DrawMeshRendererSection(MeshRendererComponent& mr) {
-    if (!ImGui::CollapsingHeader("Mesh Renderer", ImGuiTreeNodeFlags_DefaultOpen)) return;
-    ImGui::TextDisabled("Mesh");
-    ImGui::SameLine();
-    ImGui::TextUnformatted(mr.mesh.ToString().c_str());
-    ImGui::TextDisabled("Material");
-    ImGui::SameLine();
-    ImGui::TextUnformatted(mr.material.ToString().c_str());
-    if (ImGui::Checkbox("Visible", &mr.visible)) m_Scene.MarkDirty();
-    if (ImGui::Checkbox("Cast Shadow", &mr.castShadow)) m_Scene.MarkDirty();
-}
-
-void EditorApp::DrawRigidbodySection(RigidbodyComponent& rb) {
-    if (!ImGui::CollapsingHeader("Rigidbody")) return;
-    const char* types[] = {"Static", "Dynamic"};
-    int typeIndex = rb.type == RigidbodyType::Dynamic ? 1 : 0;
-    if (ImGui::Combo("Type", &typeIndex, types, 2)) {
-        rb.type = typeIndex == 1 ? RigidbodyType::Dynamic : RigidbodyType::Static;
-        m_Scene.MarkDirty();
-    }
-    if (ImGui::DragFloat("Mass", &rb.mass, 0.05f, 0.01f, 10000.0f)) m_Scene.MarkDirty();
-    if (ImGui::DragFloat("Restitution", &rb.restitution, 0.01f, 0.0f, 1.0f)) m_Scene.MarkDirty();
-    if (ImGui::Checkbox("Use Gravity", &rb.useGravity)) m_Scene.MarkDirty();
-    if (ImGui::Checkbox("Awake", &rb.isAwake)) m_Scene.MarkDirty();
-    ImGui::TextDisabled("Velocity: %.3f, %.3f, %.3f", rb.linearVelocity.x, rb.linearVelocity.y, rb.linearVelocity.z);
-}
-
-void EditorApp::DrawDirectionalLightSection(DirectionalLightComponent& dl) {
-    if (!ImGui::CollapsingHeader("Directional Light", ImGuiTreeNodeFlags_DefaultOpen)) return;
-    if (ImGui::DragFloat3("Direction", &dl.direction.x, 0.01f)) m_Scene.MarkDirty();
-    if (ImGui::DragFloat("Intensity", &dl.intensity, 0.05f, 0.0f, 100.0f)) m_Scene.MarkDirty();
-    if (ImGui::ColorEdit3("Color", &dl.color.x)) m_Scene.MarkDirty();
-}
-
-void EditorApp::DrawScriptSection(ScriptComponent& sc) {
-    if (!ImGui::CollapsingHeader("Script")) return;
-    char pathBuf[512];
-    std::snprintf(pathBuf, sizeof(pathBuf), "%s", sc.scriptPath.c_str());
-    ImGui::InputText("Path", pathBuf, sizeof(pathBuf), ImGuiInputTextFlags_ReadOnly);
-    if (ImGui::Checkbox("Enabled", &sc.enabled)) m_Scene.MarkDirty();
-}
-
-void EditorApp::DrawLodSection(LodComponent& lod) {
-    if (!ImGui::CollapsingHeader("LOD")) return;
-    ImGui::Text("Levels: %zu", lod.levels.size());
-    ImGui::Text("Screen heights: %zu", lod.screenHeights.size());
-    if (ImGui::DragFloat("Bounding Radius", &lod.boundingRadius, 0.05f, 0.05f, 10000.0f)) m_Scene.MarkDirty();
-    if (ImGui::DragFloat("LOD Bias", &lod.lodBias, 0.01f, -4.0f, 4.0f)) m_Scene.MarkDirty();
-}
 
 void EditorApp::DrawInspectorPanel() {
     if (!ImGui::Begin("Inspector", &m_ShowInspector)) { ImGui::End(); return; }
+
+    // Resource mode wins when an asset is selected (§6.3): the asset inspector
+    // replaces the entity inspector entirely (header included).
+    if (editor::HasAssetSelection()) {
+        editor::ResourceInspector::Draw(editor::SelectedAsset());
+        ImGui::End();
+        return;
+    }
 
     // Header: scene save/load + dirty state.
     const bool dirty = m_Scene.IsDirty();
@@ -712,130 +1196,74 @@ void EditorApp::DrawInspectorPanel() {
     ImGui::TextDisabled("%s%s", m_ScenePath.filename().string().c_str(), dirty ? " *" : "");
     ImGui::Separator();
 
-    if (m_Selected == ecs::NullEntity || !m_Scene.World().IsAlive(m_Selected)) {
-        ImGui::TextDisabled("No entity selected");
+    const ecs::Entity entity = SelectedEntity();
+    if (entity == ecs::NullEntity) {
+        ImGui::TextDisabled("Select an entity or asset");
         ImGui::End();
         return;
     }
 
     auto& world = m_Scene.World();
-    const auto entity = m_Selected;
+    const raven::UUID uuid = world.GetComponent<UuidComponent>(entity).id;
+    const size_t selectedCount = editor::SelectionCount();
+    const bool multi = selectedCount > 1;
 
-    // Name
+    // Breadcrumb: <scene> / <parent chain> / <entity> — click a crumb to select it.
+    std::vector<std::pair<raven::UUID, std::string>> crumbs;
+    {
+        std::vector<std::pair<raven::UUID, std::string>> chain;
+        ecs::Entity cursor = entity;
+        while (cursor != ecs::NullEntity && world.IsAlive(cursor)) {
+            const std::string cname = world.HasComponent<NameComponent>(cursor) ? world.GetComponent<NameComponent>(cursor).name
+                                                                                  : ("Entity " + std::to_string(static_cast<uint32_t>(cursor)));
+            chain.emplace_back(world.GetComponent<UuidComponent>(cursor).id, cname);
+            cursor = world.HasComponent<TransformComponent>(cursor) ? world.GetComponent<TransformComponent>(cursor).parent : ecs::NullEntity;
+        }
+        crumbs.assign(chain.rbegin(), chain.rend());
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.62f, 0.68f, 0.76f, 1.0f));
+    ImGui::TextUnformatted(m_ProjectName.c_str());
+    ImGui::PopStyleColor();
+    for (const auto& [crumbUuid, crumbName] : crumbs) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("/");
+        ImGui::SameLine();
+        if (ImGui::SmallButton(crumbName.c_str())) editor::SelectOnly(crumbUuid);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Select %s", crumbName.c_str());
+    }
+    ImGui::Separator();
+
+    // Multi-edit banner + name field (rename routes through EntityRenameCommand).
+    if (multi) {
+        ImGui::TextColored(ImVec4(0.55f, 0.85f, 1.0f, 1.0f), "Multi Edit — %zu entities selected", selectedCount);
+    }
     if (world.HasComponent<NameComponent>(entity)) {
-        auto& name = world.GetComponent<NameComponent>(entity).name;
+        const std::string name = world.GetComponent<NameComponent>(entity).name;
         char buf[256];
         std::snprintf(buf, sizeof(buf), "%s", name.c_str());
         if (ImGui::InputText("Name", buf, sizeof(buf))) {
-            name = buf;
-            m_Scene.MarkDirty();
-        }
-    }
-    ImGui::Text("Entity #%u", static_cast<uint32_t>(entity));
-    ImGui::Separator();
-
-    if (world.HasComponent<TransformComponent>(entity)) DrawTransformSection(world.GetComponent<TransformComponent>(entity), entity);
-    if (world.HasComponent<MeshRendererComponent>(entity)) DrawMeshRendererSection(world.GetComponent<MeshRendererComponent>(entity));
-    if (world.HasComponent<RigidbodyComponent>(entity)) DrawRigidbodySection(world.GetComponent<RigidbodyComponent>(entity));
-    if (world.HasComponent<DirectionalLightComponent>(entity)) DrawDirectionalLightSection(world.GetComponent<DirectionalLightComponent>(entity));
-    if (world.HasComponent<ScriptComponent>(entity)) DrawScriptSection(world.GetComponent<ScriptComponent>(entity));
-    if (world.HasComponent<LodComponent>(entity)) DrawLodSection(world.GetComponent<LodComponent>(entity));
-
-    ImGui::End();
-}
-
-// ---------------------------------------------------------------------------
-// Assets panel (project browser)
-// ---------------------------------------------------------------------------
-
-namespace {
-struct AssetEntry {
-    std::filesystem::path absolute;
-    std::string relative;   // relative to project root, forward slashes
-    bool isDirectory = false;
-};
-
-std::vector<AssetEntry> ScanAssets(const std::filesystem::path& projectDir, const std::filesystem::path& assetsDir) {
-    std::vector<AssetEntry> entries;
-    std::error_code ec;
-    if (!std::filesystem::is_directory(assetsDir, ec)) return entries;
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(assetsDir)) {
-        AssetEntry item;
-        item.absolute = entry.path();
-        item.isDirectory = entry.is_directory();
-        std::string rel = std::filesystem::relative(entry.path(), projectDir, ec).string();
-        std::replace(rel.begin(), rel.end(), '\\', '/');
-        item.relative = std::move(rel);
-        entries.push_back(std::move(item));
-    }
-    std::sort(entries.begin(), entries.end(), [](const AssetEntry& a, const AssetEntry& b) {
-        if (a.isDirectory != b.isDirectory) return a.isDirectory > b.isDirectory;
-        return a.relative < b.relative;
-    });
-    return entries;
-}
-
-const char* AssetGlyph(const AssetEntry& e) {
-    if (e.isDirectory) return ICON_ASSET_FOLDER;
-    const std::string ext = e.absolute.extension().string();
-    if (ext == ".ravenscene") return ICON_ASSET_SCENE;
-    if (ext == ".ravenmesh" || ext == ".obj" || ext == ".fbx") return ICON_ASSET_MESH;
-    if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".tga" || ext == ".hdr") return ICON_ASSET_IMAGE;
-    if (ext == ".lua") return ICON_ASSET_SCRIPT;
-    if (ext == ".wav" || ext == ".ogg" || ext == ".mp3" || ext == ".flac") return ICON_ASSET_AUDIO;
-    if (ext == ".ravenmaterial") return ICON_ASSET_MATERIAL;
-    if (ext == ".ravenprefab") return ICON_ASSET_PREFAB;
-    if (ext == ".spv") return ICON_ASSET_SHADER;
-    return ICON_ASSET_GENERIC;
-}
-} // namespace
-
-void EditorApp::DrawAssetsPanel() {
-    if (!ImGui::Begin("Assets", &m_ShowAssets)) { ImGui::End(); return; }
-
-    static std::vector<AssetEntry> entries;
-    static double lastScan = -1000.0;
-    const double now = ImGui::GetTime();
-    const bool needsScan = (now - lastScan) > static_cast<double>(m_EditorConfig.assetRescanSeconds);
-    if (ImGui::SmallButton(ICON_REFRESH " Refresh##refreshAssets") || needsScan) {
-        entries = ScanAssets(m_ProjectDir, m_AssetsDir);
-        lastScan = now;
-    }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rescan project assets");
-    ImGui::SameLine();
-    static char filter[128] = "";
-    ImGui::SetNextItemWidth(200.0f);
-    ImGui::InputTextWithHint("##assetFilter", "filter…", filter, sizeof(filter));
-    ImGui::SameLine();
-    ImGui::TextDisabled("%zu item(s)", entries.size());
-
-    ImGui::Separator();
-    const std::string filterStr = filter;
-    for (const AssetEntry& entry : entries) {
-        if (!filterStr.empty() && entry.relative.find(filterStr) == std::string::npos) continue;
-        if (entry.isDirectory) {
-            ImGui::TextDisabled("%s %s", AssetGlyph(entry), entry.relative.c_str());
-            continue;
-        }
-        ImGui::PushID(entry.relative.c_str());
-        if (ImGui::Selectable((std::string(AssetGlyph(entry)) + " " + entry.relative).c_str(), false, ImGuiSelectableFlags_AllowDoubleClick)) {
-            if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && entry.absolute.extension() == ".ravenscene") {
-                if (m_Scene.IsDirty()) {
-                    std::string saveError;
-                    if (m_Scene.Save(&saveError)) RAVEN_LOG_INFO("Editor: auto-saved before switching scene");
-                }
-                std::string loadError;
-                if (m_Scene.Load(entry.absolute, &loadError)) {
-                    RAVEN_LOG_INFO("Editor: opened scene %s", entry.absolute.string().c_str());
-                    m_ScenePath = entry.absolute;
-                    m_Selected = ecs::NullEntity;
-                } else {
-                    RAVEN_LOG_ERROR("Editor: cannot open scene: %s", loadError.c_str());
-                }
+            const std::string newName = buf;
+            if (newName != name) {
+                const raven::UUID id = uuid;
+                QueuePendingOp([this, id, newName] {
+                    editor::Commands().Push(std::make_shared<editor::EntityRenameCommand>(m_Scene, id, newName));
+                    m_Scene.MarkDirty();
+                });
             }
         }
-        ImGui::PopID();
     }
+    ImGui::TextDisabled("UUID %s%s", uuid.ToString().c_str(), multi ? "   [primary]" : "");
+    ImGui::Separator();
+
+    // Registry-driven component sections.
+    editor::EnsureBuiltinDrawersRegistered();
+    for (const editor::ComponentDrawerEntry& entry : editor::ComponentDrawerRegistry::Instance().Entries()) {
+        editor::DrawComponentSection(m_Scene, entity, uuid, entry);
+    }
+
+    ImGui::Separator();
+    editor::DrawAddComponentPopup(m_Scene, entity, uuid);
+
     ImGui::End();
 }
 
@@ -930,8 +1358,11 @@ void EditorApp::DrawConsolePanel() {
                                           ? m_ConsoleChannels[static_cast<size_t>(m_ConsoleChannelFilter - 1)]
                                           : std::string();
 
+    // Pre-pass: filter once, then collapse identical consecutive entries into [xN] rows.
+    struct ConsoleRow { const LogEntry* entry; int count; };
+    std::vector<ConsoleRow> rows;
+    rows.reserve(m_Log.size());
     int matches = 0;
-    ImGui::BeginChild("logScroll", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar);
     for (const LogEntry& entry : m_Log) {
         if (entry.level < minLevel) continue;
         if (!activeChannel.empty() && entry.channel != activeChannel) continue;
@@ -941,22 +1372,58 @@ void EditorApp::DrawConsolePanel() {
             if (textLower.find(searchLower) == std::string::npos) continue;
         }
         ++matches;
-        ImVec4 color;
-        switch (static_cast<LogLevel>(entry.level)) {
-            case LogLevel::Warn: color = ImVec4(0.95f, 0.80f, 0.45f, 1.0f); break;
-            case LogLevel::Error:
-            case LogLevel::Fatal: color = ImVec4(0.95f, 0.45f, 0.45f, 1.0f); break;
-            case LogLevel::Debug: color = ImVec4(0.62f, 0.68f, 0.75f, 1.0f); break;
-            default: color = ImVec4(0.82f, 0.84f, 0.86f, 1.0f); break;
+        if (!rows.empty()) {
+            const LogEntry* prev = rows.back().entry;
+            if (prev->level == entry.level && prev->channel == entry.channel && prev->text == entry.text) {
+                ++rows.back().count;
+                continue;
+            }
         }
-        if (!entry.channel.empty() && entry.channel != "General") {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.70f, 0.85f, 1.0f));
-            ImGui::Text("[%s]", entry.channel.c_str());
+        rows.push_back({&entry, 1});
+    }
+
+    ImGui::BeginChild("logScroll", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar);
+    ImGuiListClipper clipper;
+    clipper.Begin(static_cast<int>(rows.size()), ImGui::GetTextLineHeightWithSpacing());
+    while (clipper.Step()) {
+        for (int rowIndex = clipper.DisplayStart; rowIndex < clipper.DisplayEnd; ++rowIndex) {
+            const ConsoleRow& row = rows[static_cast<size_t>(rowIndex)];
+            const LogEntry& entry = *row.entry;
+            const bool zebra = (rowIndex % 2) == 1;
+            if (zebra) {
+                const ImVec2 rowMin = ImGui::GetCursorScreenPos();
+                ImGui::GetWindowDrawList()->AddRectFilled(rowMin, ImVec2(rowMin.x + ImGui::GetContentRegionAvail().x, rowMin.y + ImGui::GetTextLineHeightWithSpacing()),
+                                                          IM_COL32(255, 255, 255, 10));
+            }
+            ImVec4 color;
+            const char* levelIcon;
+            switch (static_cast<LogLevel>(entry.level)) {
+                case LogLevel::Warn:  color = ImVec4(0.95f, 0.80f, 0.45f, 1.0f); levelIcon = ICON_LOG_WARN;  break;
+                case LogLevel::Error:
+                case LogLevel::Fatal: color = ImVec4(0.95f, 0.45f, 0.45f, 1.0f); levelIcon = ICON_LOG_ERROR; break;
+                case LogLevel::Debug: color = ImVec4(0.62f, 0.68f, 0.75f, 1.0f); levelIcon = ICON_LOG_INFO;  break;
+                default:              color = ImVec4(0.82f, 0.84f, 0.86f, 1.0f); levelIcon = ICON_LOG_INFO;  break;
+            }
+            ImGui::PushStyleColor(ImGuiCol_Text, color);
+            ImGui::TextUnformatted(levelIcon);
             ImGui::PopStyleColor();
             ImGui::SameLine();
+            if (row.count > 1) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.62f, 0.68f, 0.76f, 1.0f));
+                ImGui::Text("[x%d]", row.count);
+                ImGui::PopStyleColor();
+                ImGui::SameLine();
+            }
+            if (!entry.channel.empty() && entry.channel != "General") {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.70f, 0.85f, 1.0f));
+                ImGui::Text("[%s]", entry.channel.c_str());
+                ImGui::PopStyleColor();
+                ImGui::SameLine();
+            }
+            ImGui::TextColored(color, "%s", entry.text.c_str());
         }
-        ImGui::TextColored(color, "%s", entry.text.c_str());
     }
+    clipper.End();
     if (filtering) ImGui::TextDisabled("%d match(es)", matches);
     if (m_LogDirty) {
         if (m_ConsoleAutoScroll) ImGui::SetScrollHereY(1.0f);
@@ -992,7 +1459,7 @@ bool EditorApp::BeginProjectFromDir(const std::filesystem::path& dir, std::strin
 
 std::map<std::string, bool> EditorApp::PanelVisibilityMap() const {
     return {{"Hierarchy", m_ShowHierarchy}, {"Inspector", m_ShowInspector}, {"Assets", m_ShowAssets},
-            {"Profiler", m_ShowProfiler},  {"Console", m_ShowConsole},     {"Viewport Tools", true}};
+            {"Profiler", m_ShowProfiler},  {"Console", m_ShowConsole},     {"History", m_ShowHistory}, {"Viewport Tools", true}};
 }
 
 void EditorApp::ApplyPanelVisibility(const std::map<std::string, bool>& panels) {
@@ -1005,6 +1472,7 @@ void EditorApp::ApplyPanelVisibility(const std::map<std::string, bool>& panels) 
     apply("Assets", m_ShowAssets);
     apply("Profiler", m_ShowProfiler);
     apply("Console", m_ShowConsole);
+    apply("History", m_ShowHistory);
 }
 
 void EditorApp::SaveWorkspaceAs(const std::string& name) {

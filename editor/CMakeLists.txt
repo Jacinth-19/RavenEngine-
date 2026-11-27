@@ -17,8 +17,20 @@ add_library(raven_editor STATIC
     core/Fonts.cpp
     core/RavenEditorHooks.cpp
     core/StylePresets.cpp
+    core/AssetOperations.cpp
+    core/Clipboard.cpp
     core/Workspaces.cpp
-    panels/PanelRegistry.cpp)
+    widgets/ThumbnailCache.cpp
+    widgets/ThumbnailGenerator.cpp
+    widgets/ImportProgress.cpp
+    widgets/TextureRemapDialog.cpp
+    core/TextureRemap.cpp
+    inspectors/ComponentDrawerRegistry.cpp
+    inspectors/MaterialEditor.cpp
+    inspectors/TextureEditor.cpp
+    inspectors/ResourceInspector.cpp
+    panels/PanelRegistry.cpp
+    panels/ProjectPanel.cpp)
 add_library(raven::editor ALIAS raven_editor)
 
 target_include_directories(raven_editor

@@ -21,6 +21,10 @@ struct AssetMeta {
     std::string relativePath;              // informational; authoritative mapping lives in the DB
     uint32_t importVersion = 1;
     nlohmann::json importSettings = nlohmann::json::object();
+    // §10.4: model material-slot -> texture (assets-root-relative path) mapping,
+    // persisted across sessions. Written by the TextureRemapDialog; consumed by the
+    // smart model import (assimp). Empty object = never asked.
+    nlohmann::json textureRemap = nlohmann::json::object();
 
     nlohmann::json ToJson() const;
     static std::optional<AssetMeta> FromJson(const nlohmann::json& json, std::string* error = nullptr);

@@ -2835,6 +2835,41 @@ bool Renderer::RenderUiFrame(const std::function<void(VkCommandBuffer, const Fra
     return true;
 }
 
+bool Renderer::CreateUiImage(const void* rgba8Pixels, uint32_t width, uint32_t height, UiImage* out,
+                             std::string* error) {
+    if (out == nullptr || rgba8Pixels == nullptr || width == 0 || height == 0) {
+        if (error) *error = "CreateUiImage: invalid arguments";
+        return false;
+    }
+    if (!m_Impl) { if (error) *error = "CreateUiImage: renderer not initialized"; return false; }
+    Impl& impl = *m_Impl;
+
+    std::vector<std::vector<uint8_t>> pixels(1);
+    const size_t byteCount = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+    pixels[0].assign(static_cast<const uint8_t*>(rgba8Pixels), static_cast<const uint8_t*>(rgba8Pixels) + byteCount);
+    vk::ImageResource uploaded = vk::UploadImage(impl.context, {{width, height}}, pixels, VK_FORMAT_R8G8B8A8_UNORM);
+    if (uploaded.image == VK_NULL_HANDLE) {
+        if (error) *error = "CreateUiImage: image upload failed";
+        return false;
+    }
+
+    out->image = uploaded.image;
+    out->memory = uploaded.memory;
+    out->view = uploaded.view;
+    out->width = width;
+    out->height = height;
+    return true;
+}
+
+void Renderer::DestroyUiImage(UiImage& image) {
+    if (!m_Impl) { image = {}; return; }
+    VkDevice device = m_Impl->context.Device();
+    if (image.view != VK_NULL_HANDLE) vkDestroyImageView(device, image.view, nullptr);
+    if (image.image != VK_NULL_HANDLE) vkDestroyImage(device, image.image, nullptr);
+    if (image.memory != VK_NULL_HANDLE) vkFreeMemory(device, image.memory, nullptr);
+    image = {};
+}
+
 VkImageView Renderer::OffscreenColorView() const { return m_Impl ? m_Impl->offscreenColor.view : VK_NULL_HANDLE; }
 VkSampler Renderer::OffscreenSampler() const { return m_Impl ? m_Impl->offscreenSampler : VK_NULL_HANDLE; }
 VkFormat Renderer::OffscreenFormat() const { return m_Impl ? m_Impl->offscreenColor.format : VK_FORMAT_UNDEFINED; }

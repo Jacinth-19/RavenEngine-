@@ -14,10 +14,13 @@
 #pragma once
 
 #include <cstdint>
+#include <deque>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -33,11 +36,26 @@
 
 #include "editor/core/EditorConfig.h"
 #include "editor/core/Workspaces.h"
+#include "editor/inspectors/ComponentDrawerRegistry.h"
+#include "editor/panels/HistoryPanel.h"
 #include "editor/panels/PanelRegistry.h"
+#include "editor/commands/ComponentCommands.h"
+#include "editor/commands/EditorCommandStack.h"
+#include "editor/commands/EntityCommands.h"
+#include "editor/commands/GizmoTransformCommand.h"
+#include "editor/commands/MaterialSnapshotCommand.h"
+#include "editor/commands/PropertyCommand.h"
+#include "editor/events/EditorSignals.h"
+#include "editor/selection/EditorSelection.h"
+
+#include "raven/core/EventBus.h"
+#include "raven/core/FileWatcher.h"
 
 struct GLFWwindow;
 
 namespace raven {
+
+namespace editor { struct AssetUuidPayload; }   // editor/core/AssetDragDrop.h
 
 class EditorApp {
 public:
@@ -60,7 +78,7 @@ public:
     FrameParams MakeFrameParams(bool uiInScene) const;
 
     // Selection
-    ecs::Entity Selected() const { return m_Selected; }
+    ecs::Entity Selected() const { return SelectedEntity(); }
 
     // --- Phase 1 shell plumbing ----------------------------------------------
     float LastAspect() const { return m_LastAspect; }
@@ -73,8 +91,8 @@ public:
     void RequestOpenProject(const std::filesystem::path& dir);
 
     // --- shared helpers used by both modes ----------------------------------
-    void RegisterLogCapture();          // hooks Logger -> console panel
-    void AddLogLine(int level, const std::string& text);
+    void RegisterLogCapture();          // Logger → LogEntrySignal bus hop → console ring
+    void AddLogLine(int level, const std::string& channel, const std::string& text, uint64_t id);
 
     // Panel visibility toggles (View menu)
     bool m_ShowHierarchy = true;
@@ -82,13 +100,43 @@ public:
     bool m_ShowAssets = true;
     bool m_ShowProfiler = true;
     bool m_ShowConsole = true;
+    bool m_ShowHistory = true;
+    bool m_AssetPanelHasFocus = false;   // Assets panel reports keyboard focus (F2/Del/Ctrl+D yield to it)
 
 private:
+    // Spawn an entity (child of parentUuid, or root on nil) holding a MeshRenderer pointed
+    // at the dropped asset; undo removes both the renderer and the spawned entity. §5.4/§10.1.
+    void InstantiateModelDrop(const editor::AssetUuidPayload& payload, const raven::UUID& parentUuid);
+    // §10.3: consume queued watcher events once per frame — maps paths to asset
+    // UUIDs, rescans the database when files were created/deleted, reloads modified
+    // assets in place, and republishes AssetChangedSignal.
+    void ProcessAssetFileEvents();
+    // Queue fed by the FileWatcher's callback (background thread); struct is local.
+    std::mutex m_FileEventMutex;
+    struct AssetFileEvent { std::string path; int event; };   // event == raven::FileEvent
+    std::vector<AssetFileEvent> m_FileEvents;
+    std::unique_ptr<raven::FileWatcher> m_AssetWatcher;
+    uint64_t m_FileEventSub = 0;   // EventBus subscription handle for AssetFileChangedSignal
+
+    // --- selection helpers (§5.3): the singleton holds UUIDs; UUIDs, never handles ----
+    ecs::Entity SelectedEntity() const;                 // primary selection resolved to a live entity
+    std::vector<ecs::Entity> SelectedEntities() const;  // every alive selected entity, primary LAST
+    void SelectOnly(ecs::Entity e);                     // plain click — replace the selection
+    void SelectToggle(ecs::Entity e);                   // ctrl-click — toggle membership
+    void SelectSpan(ecs::Entity e, const std::vector<ecs::Entity>& visibleOrder);   // shift-click — visible-order span from the anchor
+    void RequestDeleteSelection();                      // deferred — safe from anywhere
+    void RequestDuplicate(ecs::Entity e);               // deferred
+    void RequestCreateChild(ecs::Entity parent);        // deferred
+    void QueuePendingOp(std::function<void()> op);      // executed at the top of the next frame
+    void ConsumePendingOps();
+    void RequestRename(raven::UUID id);                 // enter inline rename for this entity (F2)
+    bool IsLocked(raven::UUID id) const { return m_LockedEntities.find(id) != m_LockedEntities.end(); }
+    void ToggleLock(raven::UUID id);
+
     // --- panel builders ------------------------------------------------------
     void DrawMenuBar();
     void DrawHierarchyPanel();
     void DrawInspectorPanel();
-    void DrawAssetsPanel();
     void DrawProfilerPanel();
     void DrawConsolePanel();
     void DrawViewportPanel();
@@ -111,12 +159,6 @@ private:
     void Autosave();                   // throttled scene snapshot to <project>/.raven/autosave
     void ApplyThemeAndPersist(const std::string& themeId);
     void ExportLog();                  // writes the console ring to <project>/.raven/logs/console_*.txt
-    void DrawTransformSection(TransformComponent& t, ecs::Entity e);
-    void DrawMeshRendererSection(MeshRendererComponent& mr);
-    void DrawRigidbodySection(RigidbodyComponent& rb);
-    void DrawDirectionalLightSection(DirectionalLightComponent& dl);
-    void DrawScriptSection(ScriptComponent& sc);
-    void DrawLodSection(LodComponent& lod);
 
     // --- 3D viewport helpers ---------------------------------------------------
     void UpdateOrbitCamera(uint32_t viewportWidth, uint32_t viewportHeight);
@@ -134,9 +176,11 @@ private:
     struct LogEntry {
         int level = 2;               // LogLevel::Info
         std::string text;
-        std::string channel;         // "General" until Logger gains channels (Phase 2)
+        std::string channel;         // "General" when unchannelled (empty channel from the logger)
+        uint64_t id = 0;             // monotonic per session — console dedupe/ordering
     };
     std::vector<LogEntry> m_Log;
+    uint64_t m_LogSignalId = 0;      // assigns LogEntrySignal::id
     bool m_LogDirty = false;
     bool m_LogCapped = false;        // set when the 1024-entry cap dropped older lines
     std::vector<std::string> m_ConsoleChannels;   // learned channel names, for the filter combo
@@ -168,9 +212,17 @@ private:
     int m_GizmoOperation = 0;   // 0 translate, 1 rotate, 2 scale
     bool m_GizmoLocal = true;
 
-    // --- selection ---------------------------------------------------------------
-    ecs::Entity m_Selected = ecs::NullEntity;
-    std::vector<ecs::Entity> m_DeleteList;
+    // --- selection / hierarchy UI state -------------------------------------------
+    // Scene selection lives in the editor selection singleton (UUIDs); these are view state.
+    std::unordered_set<raven::UUID, raven::UUIDHash> m_LockedEntities;   // lock = skip gizmo + picking (session-local)
+    raven::UUID m_SpanAnchor;                            // shift-click span anchor (visible row order)
+    std::vector<ecs::Entity> m_VisibleRowOrder;         // cached per frame for span selection
+    std::deque<std::function<void()>> m_PendingOps;     // scene mutations deferred out of ImGui iteration
+    char m_HierarchyFilterBuf[128] = {};                // substring filter (case-insensitive)
+    std::unordered_set<raven::UUID, raven::UUIDHash> m_HierFilterKeep;   // rows visible under the active filter (matches + ancestors)
+    raven::UUID m_RenameUUID;                           // row in inline rename (F2); nil = none
+    char m_RenameBuf[256] = {};
+    bool m_RenameFocus = false;
     bool m_AboutOpen = false;
 
     Renderer& m_Renderer;

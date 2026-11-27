@@ -119,6 +119,24 @@ public:
     // skipped (swapchain stale/minimized).
     bool RenderUiFrame(const std::function<void(VkCommandBuffer, const FrameOverlayTarget&)>& overlay);
 
+    // --- UI images (editor thumbnails / previews) ----------------------------
+    // Tightly packed RGBA8 pixels -> device-local image (transfer -> shader-read
+    // only layout). Uploads are blocking (transient command buffer, queue wait)
+    // but tiny (<= 128px); intended for one-off UI content, not per-frame churn.
+    // Sampling state belongs to the ImGui Vulkan backend (it binds its own
+    // linear/nearest samplers for custom textures).
+    struct UiImage {
+        VkImage image = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkImageView view = VK_NULL_HANDLE;
+        uint32_t width = 0;
+        uint32_t height = 0;
+    };
+    bool CreateUiImage(const void* rgba8Pixels, uint32_t width, uint32_t height, UiImage* out,
+                       std::string* error = nullptr);
+    // Destroys an image previously created by CreateUiImage (no-op on a cleared struct).
+    void DestroyUiImage(UiImage& image);
+
     FrameStats GetFrameStats() const;
 
     // --- Vulkan handles for ImGui backend ------------------------------------

@@ -37,6 +37,7 @@ compile_commands.json
 Thumbs.db
 
 # RavenEngine local state
+.raven/
 sample/Library/
 *.ravencache
 imgui.ini

@@ -17,6 +17,7 @@ enum class AssetType : uint32_t {
     LuaScript,
     Font,
     Prefab,
+    Anim,          // skeletal animation clips (.ravenanim)
 };
 
 const char* AssetTypeToString(AssetType type);

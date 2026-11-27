@@ -7,8 +7,10 @@
 #include "raven/core/EditorHooks.h"
 #include "raven/core/Logger.h"
 #include "raven/core/UUID.h"
+#include "raven/core/EventBus.h"
 
 #include "editor_app.h"
+#include "editor/events/EditorSignals.h"
 
 namespace raven {
 namespace {
@@ -75,6 +77,11 @@ public:
 
     void OnAssetReloaded(const UUID& asset, AssetReloadKind kind) override {
         RAVEN_LOG_INFO("asset %s %s", asset.ToString().c_str(), AssetReloadKindName(kind));
+        // Republish onto the editor bus so panels (thumbnails) can invalidate in place.
+        editor::AssetChangedSignal signal;
+        signal.asset = asset;
+        signal.kind = kind;
+        raven::EventBus::Instance().Publish(signal);
     }
 
     void SetApp(EditorApp* app) { m_App.store(app, std::memory_order_relaxed); }

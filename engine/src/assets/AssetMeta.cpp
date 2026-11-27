@@ -10,6 +10,7 @@ nlohmann::json AssetMeta::ToJson() const {
     j["relativePath"] = relativePath;
     j["importVersion"] = importVersion;
     j["importSettings"] = importSettings;
+    if (textureRemap.is_object() && !textureRemap.empty()) j["textureRemap"] = textureRemap;
     return j;
 }
 
@@ -33,6 +34,8 @@ std::optional<AssetMeta> AssetMeta::FromJson(const nlohmann::json& json, std::st
         meta.importSettings = json["importSettings"];
     else
         meta.importSettings = nlohmann::json::object();
+    if (json.contains("textureRemap") && json["textureRemap"].is_object())
+        meta.textureRemap = json["textureRemap"];
     return meta;
 }
 
