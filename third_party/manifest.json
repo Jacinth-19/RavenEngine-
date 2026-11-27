@@ -134,7 +134,7 @@
       "license": "MIT/PD",
       "source": "https://github.com/richgel999/bc7enc_rdo",
       "pinnedCommit": "b9438627eef73a1157e84201b6fa6eb2ffd6d9f0",
-      "purpose": "BCn texture compression (BC7/BC5/BC1) at import time; ISPC path excluded; bundles lodepng + miniz",
+      "purpose": "BCn texture compression (BC7/BC5/BC1) at import time; ISPC path excluded; RDO pipeline (ert.cpp/rdo_bc_encoder.cpp) vendored but not compiled (CI ert.cpp failure, see cmake/RavenDeps.cmake); bundles lodepng + miniz",
       "type": "library"
     },
     {

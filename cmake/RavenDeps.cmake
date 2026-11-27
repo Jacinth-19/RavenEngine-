@@ -186,11 +186,16 @@ endif()
 add_library(raven_bc7enc STATIC
     ${CMAKE_SOURCE_DIR}/third_party/bc7enc_rdo/bc7enc.cpp
     ${CMAKE_SOURCE_DIR}/third_party/bc7enc_rdo/bc7decomp.cpp
-    ${CMAKE_SOURCE_DIR}/third_party/bc7enc_rdo/rdo_bc_encoder.cpp
     ${CMAKE_SOURCE_DIR}/third_party/bc7enc_rdo/rgbcx.cpp
     ${CMAKE_SOURCE_DIR}/third_party/bc7enc_rdo/utils.cpp
-    ${CMAKE_SOURCE_DIR}/third_party/bc7enc_rdo/lodepng.cpp
-    ${CMAKE_SOURCE_DIR}/third_party/bc7enc_rdo/ert.cpp)
+    ${CMAKE_SOURCE_DIR}/third_party/bc7enc_rdo/lodepng.cpp)
+# NOTE: ert.cpp + rdo_bc_encoder.cpp (the BC7 rate-distortion optimization pipeline) are
+# intentionally NOT compiled. ert.cpp failed to compile on the Ubuntu 24.04 CI runner with
+# "'const struct ert::color_rgba' has no member named 'm_c'" (bc7enc_rdo b943862) while the
+# same sources build cleanly on GCC 12/13 locally — the cause is not yet understood and the
+# TU is out of scope for import-time BCn. The files remain vendored untouched upstream code.
+# When the BCn import work lands (docs/EDITOR_DESIGN.md Phase 3), revisit: either fix the
+# mismatch or drop the RDO path permanently.
 add_library(raven::bc7enc ALIAS raven_bc7enc)
 target_include_directories(raven_bc7enc PUBLIC ${CMAKE_SOURCE_DIR}/third_party/bc7enc_rdo)
 target_compile_definitions(raven_bc7enc PRIVATE SUPPORT_BC7E=0)

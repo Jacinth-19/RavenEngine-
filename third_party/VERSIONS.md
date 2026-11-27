@@ -24,7 +24,7 @@ system Vulkan loader). See `manifest.json` for machine-readable data (consumed b
 | `spdlog/` | https://github.com/gabime/spdlog | 1.17.0 `79524dd` | MIT | `raven::spdlog` (header-only) — backend of `raven::Logger` |
 | `spirv-cross/` | https://github.com/KhronosGroup/SPIRV-Cross | vulkan-sdk-1.4.363.0 `f11ba9f` | Apache-2.0 | `raven_spirv_cross` — **reflection subset only** (SPIRV-Cross core + `spirv_glsl` for `spirv_reflect`; no HLSL/MSL backends) |
 | `jolt/` | https://github.com/jrouwe/JoltPhysics | 5.7.0 `cf16769` | MIT | `Jolt::Jolt` when built with `-DRAVEN_BUILD_JOLT=ON` |
-| `bc7enc_rdo/` | https://github.com/richgel999/bc7enc_rdo | master `b943862` | MIT/PD | `raven_bc7enc` — BCn compression (ISPC path excluded); bundles `lodepng` (PNG) + `miniz` (zlib) |
+| `bc7enc_rdo/` | https://github.com/richgel999/bc7enc_rdo | master `b943862` | MIT/PD | `raven_bc7enc` — BCn compression (core encoder/decoder: bc7enc/bc7decomp/rgbcx/utils/lodepng). ISPC path excluded; **RDO pipeline (`ert.cpp`, `rdo_bc_encoder.cpp`) present but not compiled** — it failed on Ubuntu 24.04 CI with a spurious `ert::color_rgba::m_c` error; see cmake/RavenDeps.cmake note. Bundles `lodepng` + `miniz` |
 | `tracy/` | https://github.com/wolfpld/tracy | 0.15.0 `f2a4f25` | BSD-3-Clause | `raven::tracy` (client only) — zones active with `-DRAVEN_ENABLE_TRACY=ON` |
 | `phosphor/` | https://github.com/phosphor-icons/core | core v2.0.8 `d42782b` | MIT | editor icon font `Phosphor.ttf` (+ LICENSE); codepoints from `@phosphor-icons/web` 2.1.2 `selection.json` |
 
