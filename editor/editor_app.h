@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -29,6 +30,10 @@
 #include "raven/renderer/Renderer.h"
 #include "raven/renderer/Camera.h"
 #include "raven/renderer/Quality.h"
+
+#include "editor/core/EditorConfig.h"
+#include "editor/core/Workspaces.h"
+#include "editor/panels/PanelRegistry.h"
 
 struct GLFWwindow;
 
@@ -57,6 +62,16 @@ public:
     // Selection
     ecs::Entity Selected() const { return m_Selected; }
 
+    // --- Phase 1 shell plumbing ----------------------------------------------
+    float LastAspect() const { return m_LastAspect; }
+    bool HasProject() const { return m_ProjectLoaded; }          // false → launcher is drawn
+    const editor::EditorConfig& GetConfig() const { return m_EditorConfig; }
+    // Layout persistence (workspaces/last_session). Headless capture passes false
+    // so CI runs never write user config from a throwaway environment.
+    void SetPersistLayout(bool enabled) { m_PersistLayout = enabled; }
+    // Shell actions reachable from the windowed host (e.g. after file-drop).
+    void RequestOpenProject(const std::filesystem::path& dir);
+
     // --- shared helpers used by both modes ----------------------------------
     void RegisterLogCapture();          // hooks Logger -> console panel
     void AddLogLine(int level, const std::string& text);
@@ -78,6 +93,24 @@ private:
     void DrawConsolePanel();
     void DrawViewportPanel();
     void DrawAboutModal();
+    void DrawLauncher();            // two-phase startup: recent projects / open / create
+    void DrawSettingsWindow();      // Window > Settings… — two-pane (Editor / Assets)
+    void DrawWorkspacePopups();     // Save-As + delete confirmations (menu driven)
+
+    // --- shell helpers ---------------------------------------------------------
+    bool BeginProjectFromDir(const std::filesystem::path& dir, std::string* error);  // shared launcher/open path
+    std::map<std::string, bool> PanelVisibilityMap() const;
+    void ApplyPanelVisibility(const std::map<std::string, bool>& panels);
+    void SaveWorkspaceAs(const std::string& name);
+    void LoadWorkspace(const std::string& name);
+    void DeleteWorkspace(const std::string& name);
+    void ResetLayout();
+    void ApplyPendingWorkspace();      // applied at the top of the next OnFrame
+    void PersistLastSession();         // graceful shutdown: ini + visibility
+    void RestoreLastSession();         // startup: restore last_session.{ini,workspace.json}
+    void Autosave();                   // throttled scene snapshot to <project>/.raven/autosave
+    void ApplyThemeAndPersist(const std::string& themeId);
+    void ExportLog();                  // writes the console ring to <project>/.raven/logs/console_*.txt
     void DrawTransformSection(TransformComponent& t, ecs::Entity e);
     void DrawMeshRendererSection(MeshRendererComponent& mr);
     void DrawRigidbodySection(RigidbodyComponent& rb);
@@ -99,11 +132,18 @@ private:
 
     // --- logging -----------------------------------------------------------------
     struct LogEntry {
-        int level;
+        int level = 2;               // LogLevel::Info
         std::string text;
+        std::string channel;         // "General" until Logger gains channels (Phase 2)
     };
     std::vector<LogEntry> m_Log;
     bool m_LogDirty = false;
+    bool m_LogCapped = false;        // set when the 1024-entry cap dropped older lines
+    std::vector<std::string> m_ConsoleChannels;   // learned channel names, for the filter combo
+    char m_ConsoleSearchBuf[128] = {};
+    int m_ConsoleLevelFilter = 0;    // 0 all, 1 warn+, 2 error+
+    int m_ConsoleChannelFilter = 0;  // 0 = all, 1..N → m_ConsoleChannels[n-1]
+    bool m_ConsoleAutoScroll = true;
 
     // --- scene / project ---------------------------------------------------------
     Scene m_Scene{"Scene"};
@@ -132,14 +172,35 @@ private:
     ecs::Entity m_Selected = ecs::NullEntity;
     std::vector<ecs::Entity> m_DeleteList;
     bool m_AboutOpen = false;
-    bool m_DirtyTitle = false;
-    std::string m_LastTitle;
 
     Renderer& m_Renderer;
     QualityTier m_Tier = QualityTier::High;
     bool m_ShowGrid = true;
     float m_FrameTimes[128] = {};
     int m_FrameTimeCursor = 0;
+
+    // --- Phase 1 shell state ---------------------------------------------------
+    editor::PanelRegistry m_Panels;          // docked panels behind the error boundary
+    editor::WorkspaceManager m_Workspaces;
+    editor::EditorConfig m_EditorConfig = editor::LoadEditorConfig();
+    float m_LastAspect = 16.0f / 9.0f;
+    bool m_PersistLayout = true;             // false in headless capture
+    bool m_LastSessionRestored = false;      // one-shot restore at the top of frame 0
+    bool m_DefaultLayoutDone = false;        // one-shot DockBuilder default layout
+    bool m_ProjectLoaded = false;            // false → DrawLauncher (windowed two-phase)
+    bool m_ShowSettings = false;
+    int m_SettingsSection = 0;               // 0 Editor, 1 Assets
+    bool m_WorkspaceSaveAsOpen = false;
+    char m_WorkspaceNameBuf[96] = {};
+    std::string m_WorkspacePendingName;      // LoadWorkspace stored here…
+    editor::WorkspaceManager::LoadedWorkspace m_WorkspacePending;  // …applied pre-frame
+    double m_LastAutosaveTime = 0.0;
+    char m_OpenPathBuf[512] = {};
+    char m_NewProjectNameBuf[128] = {};
+    char m_NewProjectParentBuf[512] = {};
+    std::string m_LauncherError;
+    bool m_AutoOpenOnShow = false;   // launcher auto-attempts one prefilled open
+    bool m_DirtyTitle = false;
 };
 
 } // namespace raven

@@ -22,8 +22,10 @@
 #include "raven/scene/Scene.h"
 
 #include "editor_app.h"
+#include "editor/core/RavenEditorHooks.h"
+#include "editor/core/Fonts.h"
+#include "editor/core/StylePresets.h"
 
-#define GLFW_INCLUDE_NONE
 #include "GLFW/glfw3.h"
 
 #include "imgui.h"
@@ -78,23 +80,6 @@ bool ParseArgs(int argc, char** argv, EditorArgs& args, bool& showHelp) {
     return true;
 }
 
-// Load the default font and merge in Phosphor Icons (U+E000..U+F8FF private-use area).
-// Called for both the windowed and the headless ImGui contexts. If the icon font
-// fails to load we keep the default font and log — the editor stays usable.
-void LoadRavenFonts(ImGuiIO& io, const char* iconFontDir) {
-    IM_ASSERT(iconFontDir != nullptr);
-    ImFont* base = io.Fonts->AddFontDefault();
-    ImFontConfig config;
-    config.MergeMode = true;   // merge glyphs into the previously added font
-    config.PixelSnapH = true;
-    static const ImWchar phosphorRanges[] = { 0xE000, 0xF8FF, 0 };
-    const std::string iconPath = std::string(iconFontDir) + "/Phosphor.ttf";
-    if (io.Fonts->AddFontFromFileTTF(iconPath.c_str(), 13.0f, &config, phosphorRanges) == nullptr) {
-        fprintf(stderr, "RavenEditor: failed to load icon font %s (icons will render as boxes)\n", iconPath.c_str());
-    }
-    (void)base;
-}
-
 // Initialize ImGui + Vulkan backend for the given color format.
 bool InitImGuiVulkan(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device,
                      uint32_t queueFamily, VkQueue queue, VkFormat colorFormat,
@@ -135,6 +120,7 @@ int main(int argc, char** argv) {
     }
 
     raven::Logger::Instance().SetEchoToConsole(true);
+    raven::InstallEditorHooks();   // engine hooks; editor binds the app when it exists
 
     // --- project / assets --------------------------------------------------
     const std::filesystem::path projectDir = args.project;
@@ -204,12 +190,19 @@ int main(int argc, char** argv) {
     }
 
     // --- editor app + scene ---------------------------------------------------
+    // Two-phase startup: windowed with no explicit --project goes to the launcher
+    // first (headless keeps loading the bundled sample — that is the CI capture path).
     raven::EditorApp app(renderer, rc.qualityTier);
     app.RegisterLogCapture();
-    std::string projectError;
-    if (!app.LoadProject(projectDir, &projectError)) {
-        RAVEN_LOG_ERROR("RavenEditor: %s", projectError.c_str());
-        // Keep going with an (empty) scene: the editor shell still works.
+    const bool windowedNoProject = windowed && args.project == RAVEN_SAMPLE_DIR;
+    if (windowedNoProject) {
+        RAVEN_LOG_INFO("RavenEditor: no --project given — opening the project launcher");
+    } else {
+        std::string projectError;
+        if (!app.LoadProject(projectDir, &projectError)) {
+            RAVEN_LOG_ERROR("RavenEditor: %s", projectError.c_str());
+            // Keep going with an (empty) scene: the editor shell still works.
+        }
     }
 
     // ============================ headless capture ==========================
@@ -222,11 +215,12 @@ int main(int argc, char** argv) {
 
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
-        ImGui::StyleColorsDark();
+        raven::editor::ApplyTheme(app.GetConfig().theme.c_str());
         ImGuiIO& io = ImGui::GetIO();
         io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
         io.IniFilename = nullptr;   // do not write editor state in headless mode
-        LoadRavenFonts(io, RAVEN_PHOSPHOR_FONT_DIR);
+        app.SetPersistLayout(false);
+        raven::editor::LoadRavenFonts(io);
 
         if (!InitImGuiVulkan(renderer.Instance(), renderer.PhysicalDevice(), renderer.Device(),
                              renderer.GraphicsQueueFamily(), renderer.GraphicsQueue(),
@@ -272,11 +266,11 @@ int main(int argc, char** argv) {
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    ImGui::StyleColorsDark();
+    raven::editor::ApplyTheme(app.GetConfig().theme.c_str());
     ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-    io.IniFilename = "raven_editor.ini";
-    LoadRavenFonts(io, RAVEN_PHOSPHOR_FONT_DIR);
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_ViewportsEnable;
+    io.IniFilename = nullptr;   // named workspaces + last_session.ini own layout persistence
+    raven::editor::LoadRavenFonts(io);
 
     ImGui_ImplGlfw_InitForVulkan(window, true);
     if (!InitImGuiVulkan(renderer.Instance(), renderer.PhysicalDevice(), renderer.Device(),
@@ -316,6 +310,12 @@ int main(int argc, char** argv) {
         raven::FrameParams params = app.MakeFrameParams(/*uiInScene=*/true);
         params.deltaTime = deltaTime;
         renderer.RenderFrame(app.GetScene(), app.ViewportCamera(), params);
+        if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+            // Multi-viewport: platform windows render into their own swapchains here,
+            // after the main window has been presented.
+            ImGui::UpdatePlatformWindows();
+            ImGui::RenderPlatformWindowsDefault();
+        }
     }
 
     app.Shutdown();              // drops ImGui descriptor sets before backend shutdown
