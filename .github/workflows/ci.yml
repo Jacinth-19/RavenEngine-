@@ -17,6 +17,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Layering guard (engine/sandbox must not reference the editor)
+        run: python3 scripts/check_layering.py
+
       - name: Install build dependencies (best effort)
         continue-on-error: true
         run: |

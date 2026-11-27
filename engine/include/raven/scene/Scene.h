@@ -18,9 +18,11 @@ namespace raven {
 
 class Scene {
 public:
-    // Schema history: 1 = initial; 2 adds the "lod" component (LOD chain) on entities.
-    // Readers at v1 ignore the key; writers always emit the current version.
-    static constexpr int kSchemaVersion = 2;
+    // Schema history: 1 = initial; 2 adds the "lod" component (LOD chain) on entities;
+    // 3 adds the "uuid" component (stable entity identity for editor/undo/prefabs).
+    // Readers at v1/v2 mint fresh entity UUIDs on load (that is the migration); writers
+    // always emit the current version.
+    static constexpr int kSchemaVersion = 3;
 
     Scene() = default;
     explicit Scene(std::string name) : m_Name(std::move(name)) {}
@@ -63,8 +65,9 @@ public:
     std::string SerializeToString() const;
     bool LoadFromString(const std::string& text, std::string* error = nullptr);
 
-    // Find entities by predicate / name.
+    // Find entities by predicate / name / UUID.
     std::optional<ecs::Entity> FindByName(const std::string& name) const;
+    std::optional<ecs::Entity> FindByUUID(const UUID& id) const;
 
 private:
     ecs::Entity CreateEntityInternal(const std::string& name, bool markDirty);

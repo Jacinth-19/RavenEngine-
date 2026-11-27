@@ -46,6 +46,8 @@ endif()
 
 if(WIN32)
     target_link_libraries(raven_core PUBLIC bcrypt) # entropy source
+elseif(UNIX)
+    target_link_libraries(raven_core PRIVATE ${CMAKE_DL_LIBS}) # dladdr (stack traces)
 endif()
 
 if(RAVEN_ENABLE_ASAN)

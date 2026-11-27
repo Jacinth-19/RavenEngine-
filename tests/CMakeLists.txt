@@ -11,7 +11,13 @@ add_executable(raven_tests
     test_uuid.cpp
     test_assets.cpp
     test_picking.cpp
-    test_quality.cpp)
+    test_quality.cpp
+    test_eventbus.cpp
+    test_linear_allocator.cpp
+    test_memory_tracker.cpp
+    test_stacktrace.cpp
+    test_editor_commands.cpp
+    test_scene_uuid.cpp)
 
 target_include_directories(raven_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/third_party/Vulkan-Headers/include)
 target_link_libraries(raven_tests PRIVATE raven_core)
