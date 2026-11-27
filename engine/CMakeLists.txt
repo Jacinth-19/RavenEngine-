@@ -35,7 +35,9 @@ target_link_libraries(raven_core
         raven_tinyobj
         raven_lua
         raven_miniaudio
-        raven_spdlog)
+        raven_spdlog
+    PRIVATE
+        raven_bc7enc)     # import-time BCn (BcnCodec.cpp); headers are raven_bc7enc PRIVATE usage
 
 if(MSVC)
     target_compile_options(raven_core PRIVATE /W3)

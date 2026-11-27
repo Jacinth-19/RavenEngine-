@@ -4,6 +4,7 @@
 #include <algorithm>
 
 #include "raven/assets/Artifact.h"
+#include "raven/assets/BcnCodec.h"
 #include "raven/assets/Importers.h"
 #include "raven/assets/AssetMeta.h"
 #include "raven/core/FileSystem.h"
@@ -101,6 +102,9 @@ AssetManager::LoadResult AssetManager::LoadInternal(const UUID& uuid, bool force
         if (parsed) meta = std::move(*parsed);
     }
     nlohmann::json settings = meta ? meta->importSettings : DefaultImportSettings(entry->type);
+    // BCn artifacts land next to Library/Artifacts; importers stay library-root-agnostic.
+    if (entry->type == AssetType::Texture && BcnFormatFromSetting(settings))
+        settings["bc7CacheDir"] = (m_LibraryRoot / "bc7").string();
 
     RAVEN_LOG_DEBUG("AssetManager: importing %s", entry->relativePath.c_str());
     ImportResult imported = ImportAsset(entry->type, entry->absolutePath, settings, uuid, &m_Database);

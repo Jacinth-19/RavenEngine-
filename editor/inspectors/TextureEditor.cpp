@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <string>
 
 #include "imgui.h"
@@ -10,6 +11,7 @@
 
 #include "raven/assets/AssetManager.h"
 #include "raven/assets/AssetMeta.h"
+#include "raven/assets/BcnCodec.h"
 #include "raven/core/FileSystem.h"
 #include "raven/core/Logger.h"
 #include "raven/core/UUID.h"
@@ -118,12 +120,19 @@ void DrawTextureEditor(const raven::AssetDatabase::Entry& entry) {
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Stored in the .meta; the importer does not resize yet (imported 1:1)");
 
-    bool compress = settings.value("compress", false);
-    if (ImGui::Checkbox("BCn compress on import", &compress)) {
-        CommitImportSettings(entry, [&](nlohmann::json& s) { s["compress"] = compress; });
+    const std::optional<raven::BcnFormat> bcFormat = raven::BcnFormatFromSetting(settings);
+    int bcIndex = !bcFormat ? 0 : (*bcFormat == raven::BcnFormat::BC7 ? 1 : (*bcFormat == raven::BcnFormat::BC5 ? 2 : 3));
+    const char* kBcItems[] = {"Off", "BC7 (color)", "BC5 (normals)", "BC1 (RGB, no alpha)"};
+    if (ImGui::Combo("Compress", &bcIndex, kBcItems, IM_ARRAYSIZE(kBcItems))) {
+        const raven::BcnFormat picked = (bcIndex == 1) ? raven::BcnFormat::BC7
+                                        : (bcIndex == 2) ? raven::BcnFormat::BC5 : raven::BcnFormat::BC1;
+        CommitImportSettings(entry, [&](nlohmann::json& s) {
+            if (bcIndex == 0) s.erase("compress");
+            else s["compress"] = raven::BcnFormatToString(picked);
+        });
     }
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Stored in the .meta; the BCn artifact path (.raven/cache/bc7) lands with the renderer's block-upload support");
+        ImGui::SetTooltip("BC blocks are encoded on import to <Library>/bc7/<uuid>.bc7 (BC7 for color, BC5 for normal maps, BC1 for opaque RGB); GPU upload lands with the renderer's compressed-format path");
 
     ImGui::Separator();
     if (ImGui::Button(ICON_REFRESH " Reimport now")) {

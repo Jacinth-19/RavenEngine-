@@ -194,8 +194,8 @@ add_library(raven_bc7enc STATIC
 # "'const struct ert::color_rgba' has no member named 'm_c'" (bc7enc_rdo b943862) while the
 # same sources build cleanly on GCC 12/13 locally — the cause is not yet understood and the
 # TU is out of scope for import-time BCn. The files remain vendored untouched upstream code.
-# When the BCn import work lands (docs/EDITOR_DESIGN.md Phase 3), revisit: either fix the
-# mismatch or drop the RDO path permanently.
+# Import-time BCn (docs/EDITOR_DESIGN.md Phase 3, engine/src/assets/BcnCodec.cpp) uses
+# the plain encoder/decoder path only (rgbcx + bc7enc); the RDO pipeline stays excluded.
 add_library(raven::bc7enc ALIAS raven_bc7enc)
 target_include_directories(raven_bc7enc PUBLIC ${CMAKE_SOURCE_DIR}/third_party/bc7enc_rdo)
 target_compile_definitions(raven_bc7enc PRIVATE SUPPORT_BC7E=0)

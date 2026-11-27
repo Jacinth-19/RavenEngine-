@@ -12,6 +12,7 @@
 
 #include "raven/assets/Artifact.h"
 #include "raven/assets/AssetDatabase.h"
+#include "raven/assets/BcnCodec.h"
 #include "raven/core/FileSystem.h"
 #include "raven/core/Logger.h"
 
@@ -93,6 +94,44 @@ ImportResult TextureImporter::Import(const std::filesystem::path& source, const 
     asset->hasAlpha = hasAlpha;
     asset->mips = generateMips ? GenerateMipmaps(rgba, asset->width, asset->height)
                                : std::vector<MipLevel>{MipLevel{asset->width, asset->height, std::move(rgba)}};
+
+    // Import-time BCn (§16 Phase 3): encode every mip to BC blocks and persist
+    // alongside the artifact. Best-effort — failure only logs; the RGBA .rasset
+    // remains authoritative until the renderer's compressed-format path lands.
+    if (const auto bcFormat = BcnFormatFromSetting(settings)) {
+        const std::string cacheDir = settings.value("bc7CacheDir", std::string());
+        if (!cacheDir.empty()) {
+            std::vector<std::pair<uint32_t, uint32_t>> mipDims;
+            std::vector<std::vector<uint8_t>> mipBlocks;
+            mipDims.reserve(asset->mips.size());
+            mipBlocks.reserve(asset->mips.size());
+            size_t totalBlockBytes = 0;
+            for (const auto& mip : asset->mips) {
+                std::vector<uint8_t> blocks = EncodeBcnBlocks(*bcFormat, mip.pixels.data(), mip.width, mip.height);
+                if (blocks.empty()) {
+                    RAVEN_LOG_WARN("TextureImporter: BCn encode failed for a mip of %s — skipping .bc7 artifact", source.string().c_str());
+                    mipBlocks.clear();
+                    break;
+                }
+                totalBlockBytes += blocks.size();
+                mipDims.emplace_back(mip.width, mip.height);
+                mipBlocks.push_back(std::move(blocks));
+            }
+            if (!mipBlocks.empty()) {
+                std::string bcError;
+                const std::filesystem::path out = std::filesystem::path(cacheDir) / (uuid.ToString() + ".bc7");
+                if (WriteBcnFile(out, *bcFormat, mipDims, mipBlocks, &bcError)) {
+                    RAVEN_LOG_INFO("TextureImporter: wrote %s artifact (%s, %zu mips, %zu bytes) for %s",
+                                   out.string().c_str(), BcnFormatToString(*bcFormat), mipBlocks.size(),
+                                   totalBlockBytes, source.filename().string().c_str());
+                } else {
+                    RAVEN_LOG_WARN("TextureImporter: could not write %s: %s", out.string().c_str(), bcError.c_str());
+                }
+            }
+        } else {
+            RAVEN_LOG_WARN("TextureImporter: 'compress' set but no bc7CacheDir in settings — BCn skipped for %s", source.filename().string().c_str());
+        }
+    }
 
     // Payload: "TEX1" | u32 mipCount | per mip: u32 w, u32 h, u64 bytes | pixel bytes...
     PayloadWriter writer;

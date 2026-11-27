@@ -25,6 +25,7 @@ add_executable(raven_tests
     test_textureremap.cpp
     test_asset_selection.cpp
     test_material_editor.cpp
+    test_bcn.cpp
     ${CMAKE_SOURCE_DIR}/editor/core/AssetOperations.cpp
     ${CMAKE_SOURCE_DIR}/editor/widgets/ThumbnailGenerator.cpp
     ${CMAKE_SOURCE_DIR}/editor/core/TextureRemap.cpp
