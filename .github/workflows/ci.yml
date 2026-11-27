@@ -59,7 +59,7 @@ jobs:
 
       - name: Upload build log (on failure)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-log-linux
           path: build.log
@@ -75,7 +75,7 @@ jobs:
 
       - name: Upload editor headless capture
         if: always() && steps.vk.outputs.have == '1'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: editor-headless-capture
           path: editor_capture.png
@@ -83,7 +83,7 @@ jobs:
 
       - name: Upload offscreen render from the smoke test
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: offscreen-smoke-render
           path: /tmp/raven_test_offscreen.png
@@ -93,7 +93,7 @@ jobs:
         run: python3 scripts/generate_sbom.py --output build/sbom.cdx.json
 
       - name: Upload SBOM
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sbom
           path: build/sbom.cdx.json
@@ -172,7 +172,7 @@ jobs:
 
       - name: Upload build log (on failure)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-log-windows
           path: build.log
@@ -206,7 +206,7 @@ jobs:
 
       - name: Upload build log (on failure)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-log-macos
           path: build.log
