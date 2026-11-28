@@ -8,7 +8,7 @@
   <em>A low-resource-focused C++20 Vulkan game engine — AAA ambitions on everyday hardware.</em><br>
   <img alt="CI" src="https://github.com/Jacinth-19/RavenEngine-/actions/workflows/ci.yml/badge.svg">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg">
-  <img alt="Tests: 52 core + 1 GPU smoke" src="https://img.shields.io/badge/tests-52%2B1%20passing-brightgreen.svg">
+  <img alt="Tests: 153 passing" src="https://img.shields.io/badge/tests-153%20passing-brightgreen.svg">
 </p>
 
 <p align="center"><img src="docs/media/ravenengine-splash.jpg" alt="RavenEngine splash screen artwork" width="720"><br>
@@ -54,10 +54,14 @@ enthusiast hardware.
   <strong>RavenEditor, for real.</strong><br>
   The dockspace's central node is a transparent hole: the 3D scene renders behind the UI
   (grid, PBR crate, directional shadow) and the panels — Hierarchy, Inspector (transform /
-  mesh renderer / script / LOD), Assets browser, per-pass Profiler with GPU timings, and a
-  Logger-backed Console — edit the project live. The gizmo (W/E/R = move/rotate/scale,
+  mesh renderer / script / LOD / resource-mode material & texture editors), Assets browser,
+  per-pass Profiler with GPU timings, a Logger-backed Console, Workspaces and History —
+  edit the project live. The gizmo (W/E/R = move/rotate/scale,
   local/world, snap) manipulates the selection through ImGuizmo; orbit/pan/dolly with the
-  mouse, F frames selection, Ctrl+S saves, Ctrl+D duplicates, Del deletes.<br><br>
+  mouse, F frames selection, Ctrl+S saves, Ctrl+D duplicates, Del deletes, Ctrl+Z/Y undo/redo.<br><br>
+  (Screenshot from an earlier build — the tree has since added workspaces, the history
+  panel, resource-mode inspectors and the texture remap dialog; the capture is refreshed by
+  CI when the editor changes.)
   Captured by <code>ravened --headless --frames 3 --capture editor-screenshot.png</code> on
   SwiftShader (CI does the same on Lavapipe and uploads the capture as an artifact).
 </td>
@@ -77,22 +81,31 @@ enthusiast hardware.
 - **C++20 + Vulkan 1.3** — dynamic rendering, synchronization2; no legacy paths.
 - **Render graph** — passes declare reads/writes; validation rejects forward-referenced resources; barriers solved for you.
 - **ECS** — sparse-set world, stable entity handles, views, hierarchy.
-- **Asset pipeline** — UUID-addressed assets, `.meta` sidecars, import settings (sRGB/mipmaps), deterministic DB; OBJ/texture/scene importers; sample project included.
-- **Scene format** — JSON scenes, deterministic load (`sample/scenes/sample_scene.ravenscene`).
+- **Asset pipeline** — UUID-addressed assets, `.meta` sidecars, import settings (sRGB/mipmaps/maxSize/BCn), deterministic DB rescan and issue reporting; OBJ/texture/material/audio importers; `FileWatcher` → `AssetChangedSignal` hot reload; async reimport toast with per-UUID folding; import-time **BCn compression (BC7/BC5/BC1, bc7enc_rdo)** with `.bc7` artifacts (`<Library>/bc7/<uuid>.bc7`); sample project included.
+- **Scene format** — JSON scenes; schema v3 with UUIDs for every entity (v1/v2 load + migration tested), hierarchy, LOD serialization.
 - **Renderer** — forward PBR-ish shading, PCF shadows, offscreen target, swapchain present, ImGui texture hooks ready, frame stats with per-pass GPU timings.
 - **Camera**, **rigid-body physics**, **Lua 5.4 scripting**, **miniaudio** 3D audio, **ImGui (docking) + ImGuizmo** vendored for the editor.
+- **Editor (`ravened`)** — docking layout + named **workspaces** (save/restore/reset), two-phase launcher, Hierarchy (multi-select, drag-drop instantiate), registry-driven Inspector with multi-edit and **resource mode** for material/texture assets (`.rmat` and `.meta` importSettings editing — undoable), Project panel (tree/grid/list, search, disk-cached rendered thumbnails, context menus, inline rename), texture remap dialog for smart import, History panel (click-to-time-travel), command-stack undo/redo everywhere (gizmo-drag coalescing), Console with channels, Profiler with GPU timings.
+- **Engine services** — EventBus, channelled `raven::Logger` (spdlog backend), MemoryTracker, LinearAllocator, StackTrace, JobSystem worker threads, Tracy zones (off by default), scene v3 UUID round-trips.
 - **Quality tiers** (`Quality.h`) — Low/Medium/High/Ultra presets (render scale, shadow size, MSAA, texture/aniso caps, light/particle/voice budgets, physics tick + sleep distance, LOD bias) with a unit-tested LOD projection model.
 - **CI** — Linux (Lavapipe offscreen render + CycloneDX SBOM artifact), Windows (MSVC), macOS (MoltenVK), all green; `v0.1.0` tagged; binary snapshot in `dist/`.
 
-Tests: **52 core suites + 1 Vulkan smoke test** (53 total; the GPU smoke tests require a Vulkan device — CI runs them on Lavapipe, locally on SwiftShader).
+Tests: **153 passing** locally without a Vulkan device (same suites; CI additionally builds and runs 1 Vulkan smoke test on Lavapipe).
 
 ## What's *not* done yet (the honest list)
 
-- SSAO/SSR/TAA/bloom/upscale: shipped as real GPU passes with per-tier gates (MSAA/SSAO/TAA/SSR/bloom/upscale), not just a cost model.
-- LOD selection is implemented, unit-tested, serialized in scenes, and consumed by the draw path (per-tier LOD bias + max distance).
-- Render-scale upscaling is the engine's supported path (config + resolve contract in docs); no vendored FSR/DLSS.
-- `raven-sandbox` still needs a manual orbit to look at the scene interactively; `RavenEditor` is functional but young (see below).
-- **The engine does not yet look like the reference the project is dreaming about** (path-traced AAA interiors). Closing that gap is the feature roadmap — see `docs/PERFORMANCE.md` for the budget math on how to get there on low-end hardware.
+Shipped and tested: SSAO/SSR/TAA/bloom/upscale are real GPU passes with per-tier gates (MSAA/SSAO/TAA/SSR/bloom/upscale), not just a cost model; LOD selection is implemented, unit-tested, serialized in scenes and consumed by the draw path; render-scale upscaling is the supported path (no vendored FSR/DLSS). Still missing, in rough priority order:
+
+- **Model import via assimp** — submodule pinned (v6.0.6, `RAVEN_USE_ASSIMP=ON`), importer not implemented yet: no glTF/FBX hierarchy, cameras or lights, and the texture remap dialog's decisions are not yet consumed. This blocks Phase 3's acceptance flow (drop a glTF → remap → watch it render).
+- **BCn artifacts have no renderer consumer yet** — the encoder writes `<Library>/bc7/*.bc7` on import, but upload into `VK_FORMAT_BC*` images on a transfer queue is not implemented; BC formats are unverified on any GPU.
+- **Material graph** — node editor → Slang codegen with live recompile and exposed parameters; the material/texture resource inspectors landed, everything else (shader/model/font/scene viewers) is Phase 6.
+- **GPU/renderer** — bindless 16k-texture array + buffer device addresses, GPU-driven culling, async compute, SVGF denoising, volumetric fog, GTAO, split-sum IBL, TAA + specular AA. None of these exist.
+- **Architecture** — fiber job system (today's JobSystem is worker threads), pipelined frames (Game N / Render N−1 / GPU N−2), tagged page allocators (Onion/Garlic).
+- **Jolt Physics** is vendored and builds with `RAVEN_BUILD_JOLT=ON`; the sample and physics tests use the built-in minimal solver today.
+- **Nsight Aftermath** hook is reserved (`-DNsightAftermath_ROOT=`); no GPU crash dump integration. Aftermath is proprietary — not redistributed.
+- **`raven-sandbox`** still needs a manual orbit to look at the scene interactively; `RavenEditor` is functional but young.
+- **Verification limits** — everything above that touches the GPU was verified in CI (Lavapipe) or on SwiftShader; the editor's dock/UI layers are compile-checked and run headless in CI here.
+- **The engine does not yet look like the reference the project is dreaming about** (path-traced AAA interiors). Closing that gap is the feature roadmap — see `docs/PERFORMANCE.md` for the budget math and **[docs/ROADMAP.md](docs/ROADMAP.md)** for the project-owner target spec (aspirational; nothing in it ships until it lands in this tree).
 
 ## Headless Vulkan on any machine (SwiftShader)
 
@@ -104,14 +117,14 @@ see **[docs/BUILDING.md § CPU Vulkan via SwiftShader](docs/BUILDING.md)**.
 | Path          | Contents                                                             |
 | ------------- | ------------------------------------------------------------------- |
 | `engine/`     | `raven_core` (renderer-agnostic) + `raven_render` (Vulkan 1.3)      |
-| `editor/`     | `ravened` — docking editor: hierarchy/inspector/viewport/console/profiler/assets |
+| `editor/`     | `ravened` — docking editor: hierarchy/inspector/viewport/console/profiler/assets/workspaces/history |
 | `sandbox/`    | `raven-sandbox` — minimal runnable app (windowed + offscreen smoke run)  |
 | `sample/`     | Sample project: crate mesh, PBR materials, scene, Lua script, audio |
 | `assets/`     | Engine assets: GLSL + compiled `.spv`                               |
 | `docs/`       | BUILDING, PERFORMANCE (budget math), SECURITY (SBOM audits)         |
 | `docs/media/` | Logo, splash, concept art (labeled) — renders above                 |
 | `dist/`       | Linux x86_64 binary snapshot of v0.1.0                              |
-| `tests/`      | Self-contained test framework + suites (`raven_tests`)               |
+| `tests/`      | Self-contained test framework + suites (`raven_tests`, 153)          |
 | `third_party/`| Vendored, version-pinned deps (`manifest.json`)                     |
 
 ## Performance targets
@@ -135,6 +148,14 @@ cmake --build build -j"$(nproc)"
 
 The engine configures and builds **without** system Vulkan or windowing libraries —
 `raven_render` and the GUI apps are skipped, and the core test suite still runs.
+
+## Documentation
+
+- [docs/BUILDING.md](docs/BUILDING.md) — Linux/Windows/macOS builds, headless SwiftShader, editor headless capture.
+- [docs/EDITOR_DESIGN.md](docs/EDITOR_DESIGN.md) — editor architecture (panels, commands, signals, resource inspectors) and the phased delivery plan with acceptance criteria (Phases 0–2 landed; Phase 3 mostly landed).
+- [docs/ROADMAP.md](docs/ROADMAP.md) — the project-owner target specification this engine is built toward (fiber job system, bindless, node material graph…). Aspirational — see the honest list above.
+- [docs/PERFORMANCE.md](docs/PERFORMANCE.md) — frame-time budget math for 1080p/1440p @ 60/120.
+- [docs/SECURITY.md](docs/SECURITY.md) — SBOM, audits, dependency policy.
 
 ## License
 
